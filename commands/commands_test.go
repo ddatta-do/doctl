@@ -14,18 +14,21 @@ limitations under the License.
 package commands
 
 import (
+	"errors"
 	"io"
 	"testing"
+	"time"
 
-	"github.com/digitalocean/doctl"
-	"github.com/digitalocean/doctl/do"
-	domocks "github.com/digitalocean/doctl/do/mocks"
-	"github.com/digitalocean/doctl/internal/apps/builder"
 	"github.com/digitalocean/godo"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
 	"go.uber.org/mock/gomock"
+
+	"github.com/digitalocean/doctl"
+	"github.com/digitalocean/doctl/do"
+	domocks "github.com/digitalocean/doctl/do/mocks"
+	"github.com/digitalocean/doctl/internal/apps/builder"
 )
 
 var (
@@ -107,6 +110,46 @@ var (
 	}
 	testReservedIPList = do.ReservedIPs{testReservedIP}
 
+	testReservedIPv6 = do.ReservedIPv6{
+		ReservedIPV6: &godo.ReservedIPV6{
+			Droplet:    testDroplet.Droplet,
+			RegionSlug: testDroplet.Region.Slug,
+			IP:         "5a11:a:b0a7",
+		},
+	}
+	testReservedIPv6List = do.ReservedIPv6s{testReservedIPv6}
+
+	testBYOIPPrefixCreate = &godo.BYOIPPrefixCreateResp{
+		UUID:   "123e4567-e89b-12d3-a456-426614174000",
+		Region: "nyc1",
+		Status: "active",
+	}
+
+	testBYOIPPrefix = do.BYOIPPrefix{
+		BYOIPPrefix: &godo.BYOIPPrefix{
+			Prefix:        "10.1.1.1/24",
+			Region:        "nyc1",
+			Status:        "active",
+			UUID:          "123e4567-e89b-12d3-a456-426614174000",
+			FailureReason: "",
+			Validations:   nil,
+		},
+	}
+
+	testBYOIPPrefixList = do.BYOIPPrefixes{testBYOIPPrefix}
+
+	testBYOIPPrefixGetResources = do.BYOIPPrefixResources{
+		{
+			BYOIPPrefixResource: &godo.BYOIPPrefixResource{
+				ID:         1234,
+				BYOIP:      "10.1.1.23",
+				Resource:   "do:droplet:b5816aae-437a-4d82-b440-656af71a2ad4",
+				Region:     "nyc1",
+				AssignedAt: time.Now(),
+			},
+		},
+	}
+
 	testSnapshot = do.Snapshot{
 		Snapshot: &godo.Snapshot{
 			ID:      "1",
@@ -123,6 +166,63 @@ var (
 	}
 
 	testSnapshotList = do.Snapshots{testSnapshot, testSnapshotSecondary}
+
+	testDropletBackupPolicy = do.DropletBackupPolicy{
+		DropletBackupPolicy: &godo.DropletBackupPolicy{
+			DropletID: 123,
+			BackupPolicy: &godo.DropletBackupPolicyConfig{
+				Plan:                "weekly",
+				Weekday:             "MON",
+				Hour:                0,
+				WindowLengthHours:   4,
+				RetentionPeriodDays: 28,
+			},
+			NextBackupWindow: &godo.BackupWindow{
+				Start: &godo.Timestamp{Time: time.Date(2024, time.January, 1, 12, 0, 0, 0, time.UTC)},
+				End:   &godo.Timestamp{Time: time.Date(2024, time.February, 1, 12, 0, 0, 0, time.UTC)},
+			},
+		},
+	}
+
+	anotherTestDropletBackupPolicy = do.DropletBackupPolicy{
+		DropletBackupPolicy: &godo.DropletBackupPolicy{
+			DropletID: 123,
+			BackupPolicy: &godo.DropletBackupPolicyConfig{
+				Plan:                "daily",
+				Hour:                12,
+				WindowLengthHours:   4,
+				RetentionPeriodDays: 7,
+			},
+			NextBackupWindow: &godo.BackupWindow{
+				Start: &godo.Timestamp{Time: time.Date(2024, time.January, 1, 12, 0, 0, 0, time.UTC)},
+				End:   &godo.Timestamp{Time: time.Date(2024, time.February, 1, 12, 0, 0, 0, time.UTC)},
+			},
+		},
+	}
+
+	testDropletBackupPolicies = do.DropletBackupPolicies{testDropletBackupPolicy, anotherTestDropletBackupPolicy}
+
+	testDropletSupportedBackupPolicy = do.DropletSupportedBackupPolicy{
+		SupportedBackupPolicy: &godo.SupportedBackupPolicy{
+			Name:                 "daily",
+			PossibleWindowStarts: []int{0, 4, 8, 12, 16, 20},
+			WindowLengthHours:    4,
+			RetentionPeriodDays:  7,
+			PossibleDays:         []string{},
+		},
+	}
+
+	anotherTestDropletSupportedBackupPolicy = do.DropletSupportedBackupPolicy{
+		SupportedBackupPolicy: &godo.SupportedBackupPolicy{
+			Name:                 "weekly",
+			PossibleWindowStarts: []int{0, 4, 8, 12, 16, 20},
+			WindowLengthHours:    4,
+			RetentionPeriodDays:  28,
+			PossibleDays:         []string{"SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"},
+		},
+	}
+
+	testDropletSupportedBackupPolicies = do.DropletSupportedBackupPolicies{testDropletSupportedBackupPolicy, anotherTestDropletSupportedBackupPolicy}
 )
 
 func assertCommandNames(t *testing.T, cmd *Command, expected ...string) {
@@ -150,8 +250,10 @@ type tcMocks struct {
 	apps                  *domocks.MockAppsService
 	balance               *domocks.MockBalanceService
 	billingHistory        *domocks.MockBillingHistoryService
+	prepayment            *domocks.MockPrepaymentService
 	databases             *domocks.MockDatabasesService
 	dropletActions        *domocks.MockDropletActionsService
+	dropletAutoscale      *domocks.MockDropletAutoscaleService
 	droplets              *domocks.MockDropletsService
 	keys                  *domocks.MockKeysService
 	sizes                 *domocks.MockSizesService
@@ -161,6 +263,8 @@ type tcMocks struct {
 	invoices              *domocks.MockInvoicesService
 	reservedIPs           *domocks.MockReservedIPsService
 	reservedIPActions     *domocks.MockReservedIPActionsService
+	reservedIPv6s         *domocks.MockReservedIPv6sService
+	byoipPrefixes         *domocks.MockBYOIPPrefixsService
 	domains               *domocks.MockDomainsService
 	uptimeChecks          *domocks.MockUptimeChecksService
 	volumes               *domocks.MockVolumesService
@@ -174,21 +278,53 @@ type tcMocks struct {
 	projects              *domocks.MockProjectsService
 	kubernetes            *domocks.MockKubernetesService
 	registry              *domocks.MockRegistryService
+	registries            *domocks.MockRegistriesService
 	sshRunner             *domocks.MockRunner
 	vpcs                  *domocks.MockVPCsService
+	vpcNatGateways        *domocks.MockVPCNATGatewaysService
 	oneClick              *domocks.MockOneClickService
 	listen                *domocks.MockListenerService
+	terminal              *domocks.MockTerminal
 	monitoring            *domocks.MockMonitoringService
+	insights              *domocks.MockInsightsService
 	serverless            *domocks.MockServerlessService
 	appBuilderFactory     *builder.MockComponentBuilderFactory
 	appBuilder            *builder.MockComponentBuilder
 	appDockerEngineClient *builder.MockDockerEngineClient
 	oauth                 *domocks.MockOAuthService
+	partnerAttachments    *domocks.MockPartnerAttachmentsService
+	spacesKeys            *domocks.MockSpacesKeysService
+	agentPlatform         *domocks.MockAgentPlatformService
+	dedicatedInferences   *domocks.MockDedicatedInferenceService
+	inference             *domocks.MockInferenceService
+	nfs                   *domocks.MockNfsService
+	nfsActions            *domocks.MockNfsActionsService
+	microVMs              *domocks.MockMicroVMsService
+	security              *domocks.MockSecurityService
+	hostedAgents          *domocks.MockHostedAgentsService
+	hostedAgentTriggers   *domocks.MockHostedAgentTriggersService
+	secrets               *domocks.MockSecretsService
+	vectorDBs             *domocks.MockVectorDBsService
+	signals               *domocks.MockSignalsService
 }
 
 func withTestClient(t *testing.T, tFn testFn) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
+
+	// Public Preview Terms runs on create/launch and would otherwise call
+	// Account.Get / ListSessions on every test that never stubs them.
+	prevUUID := agentPublicPreviewAccountUUID
+	prevSessions := agentPublicPreviewHasExistingSessions
+	prevSeen := viper.GetStringSlice(agentPublicPreviewTermsSeenKey)
+	agentPublicPreviewAccountUUID = func(*CmdConfig) string { return "unit-test-account" }
+	agentPublicPreviewHasExistingSessions = func(*CmdConfig) (bool, bool) { return true, true }
+	viper.Set(agentPublicPreviewTermsSeenKey, []string{"user:unit-test-account"})
+	t.Cleanup(func() {
+		agentPublicPreviewAccountUUID = prevUUID
+		agentPublicPreviewHasExistingSessions = prevSessions
+		viper.Set(agentPublicPreviewTermsSeenKey, prevSeen)
+	})
 
 	tm := &tcMocks{
 		account:               domocks.NewMockAccountService(ctrl),
@@ -196,6 +332,7 @@ func withTestClient(t *testing.T, tFn testFn) {
 		apps:                  domocks.NewMockAppsService(ctrl),
 		balance:               domocks.NewMockBalanceService(ctrl),
 		billingHistory:        domocks.NewMockBillingHistoryService(ctrl),
+		prepayment:            domocks.NewMockPrepaymentService(ctrl),
 		keys:                  domocks.NewMockKeysService(ctrl),
 		sizes:                 domocks.NewMockSizesService(ctrl),
 		regions:               domocks.NewMockRegionsService(ctrl),
@@ -204,13 +341,17 @@ func withTestClient(t *testing.T, tFn testFn) {
 		invoices:              domocks.NewMockInvoicesService(ctrl),
 		reservedIPs:           domocks.NewMockReservedIPsService(ctrl),
 		reservedIPActions:     domocks.NewMockReservedIPActionsService(ctrl),
+		reservedIPv6s:         domocks.NewMockReservedIPv6sService(ctrl),
+		byoipPrefixes:         domocks.NewMockBYOIPPrefixsService(ctrl),
 		droplets:              domocks.NewMockDropletsService(ctrl),
 		dropletActions:        domocks.NewMockDropletActionsService(ctrl),
+		dropletAutoscale:      domocks.NewMockDropletAutoscaleService(ctrl),
 		domains:               domocks.NewMockDomainsService(ctrl),
 		tags:                  domocks.NewMockTagsService(ctrl),
 		uptimeChecks:          domocks.NewMockUptimeChecksService(ctrl),
 		volumes:               domocks.NewMockVolumesService(ctrl),
 		volumeActions:         domocks.NewMockVolumeActionsService(ctrl),
+		vpcNatGateways:        domocks.NewMockVPCNATGatewaysService(ctrl),
 		snapshots:             domocks.NewMockSnapshotsService(ctrl),
 		certificates:          domocks.NewMockCertificatesService(ctrl),
 		loadBalancers:         domocks.NewMockLoadBalancersService(ctrl),
@@ -220,16 +361,33 @@ func withTestClient(t *testing.T, tFn testFn) {
 		kubernetes:            domocks.NewMockKubernetesService(ctrl),
 		databases:             domocks.NewMockDatabasesService(ctrl),
 		registry:              domocks.NewMockRegistryService(ctrl),
+		registries:            domocks.NewMockRegistriesService(ctrl),
 		sshRunner:             domocks.NewMockRunner(ctrl),
 		vpcs:                  domocks.NewMockVPCsService(ctrl),
 		oneClick:              domocks.NewMockOneClickService(ctrl),
 		listen:                domocks.NewMockListenerService(ctrl),
+		terminal:              domocks.NewMockTerminal(ctrl),
 		monitoring:            domocks.NewMockMonitoringService(ctrl),
+		insights:              domocks.NewMockInsightsService(ctrl),
 		serverless:            domocks.NewMockServerlessService(ctrl),
 		appBuilderFactory:     builder.NewMockComponentBuilderFactory(ctrl),
 		appBuilder:            builder.NewMockComponentBuilder(ctrl),
 		appDockerEngineClient: builder.NewMockDockerEngineClient(ctrl),
 		oauth:                 domocks.NewMockOAuthService(ctrl),
+		partnerAttachments:    domocks.NewMockPartnerAttachmentsService(ctrl),
+		spacesKeys:            domocks.NewMockSpacesKeysService(ctrl),
+		agentPlatform:         domocks.NewMockAgentPlatformService(ctrl),
+		dedicatedInferences:   domocks.NewMockDedicatedInferenceService(ctrl),
+		inference:             domocks.NewMockInferenceService(ctrl),
+		nfs:                   domocks.NewMockNfsService(ctrl),
+		nfsActions:            domocks.NewMockNfsActionsService(ctrl),
+		microVMs:              domocks.NewMockMicroVMsService(ctrl),
+		security:              domocks.NewMockSecurityService(ctrl),
+		hostedAgents:          domocks.NewMockHostedAgentsService(ctrl),
+		hostedAgentTriggers:   domocks.NewMockHostedAgentTriggersService(ctrl),
+		secrets:               domocks.NewMockSecretsService(ctrl),
+		vectorDBs:             domocks.NewMockVectorDBsService(ctrl),
+		signals:               domocks.NewMockSignalsService(ctrl),
 	}
 
 	testConfig := doctl.NewTestConfig()
@@ -251,41 +409,70 @@ func withTestClient(t *testing.T, tFn testFn) {
 
 		componentBuilderFactory: tm.appBuilderFactory,
 
-		Keys:              func() do.KeysService { return tm.keys },
-		Sizes:             func() do.SizesService { return tm.sizes },
-		Regions:           func() do.RegionsService { return tm.regions },
-		Images:            func() do.ImagesService { return tm.images },
-		ImageActions:      func() do.ImageActionsService { return tm.imageActions },
-		ReservedIPs:       func() do.ReservedIPsService { return tm.reservedIPs },
-		ReservedIPActions: func() do.ReservedIPActionsService { return tm.reservedIPActions },
-		Droplets:          func() do.DropletsService { return tm.droplets },
-		DropletActions:    func() do.DropletActionsService { return tm.dropletActions },
-		Domains:           func() do.DomainsService { return tm.domains },
-		Actions:           func() do.ActionsService { return tm.actions },
-		Account:           func() do.AccountService { return tm.account },
-		Balance:           func() do.BalanceService { return tm.balance },
-		BillingHistory:    func() do.BillingHistoryService { return tm.billingHistory },
-		Invoices:          func() do.InvoicesService { return tm.invoices },
-		Tags:              func() do.TagsService { return tm.tags },
-		UptimeChecks:      func() do.UptimeChecksService { return tm.uptimeChecks },
-		Volumes:           func() do.VolumesService { return tm.volumes },
-		VolumeActions:     func() do.VolumeActionsService { return tm.volumeActions },
-		Snapshots:         func() do.SnapshotsService { return tm.snapshots },
-		Certificates:      func() do.CertificatesService { return tm.certificates },
-		LoadBalancers:     func() do.LoadBalancersService { return tm.loadBalancers },
-		Firewalls:         func() do.FirewallsService { return tm.firewalls },
-		CDNs:              func() do.CDNsService { return tm.cdns },
-		Projects:          func() do.ProjectsService { return tm.projects },
-		Kubernetes:        func() do.KubernetesService { return tm.kubernetes },
-		Databases:         func() do.DatabasesService { return tm.databases },
-		Registry:          func() do.RegistryService { return tm.registry },
-		VPCs:              func() do.VPCsService { return tm.vpcs },
-		OneClicks:         func() do.OneClickService { return tm.oneClick },
-		Apps:              func() do.AppsService { return tm.apps },
-		Monitoring:        func() do.MonitoringService { return tm.monitoring },
-		Serverless:        func() do.ServerlessService { return tm.serverless },
-		OAuth:             func() do.OAuthService { return tm.oauth },
+		Keys:                func() do.KeysService { return tm.keys },
+		Sizes:               func() do.SizesService { return tm.sizes },
+		Regions:             func() do.RegionsService { return tm.regions },
+		Images:              func() do.ImagesService { return tm.images },
+		ImageActions:        func() do.ImageActionsService { return tm.imageActions },
+		ReservedIPs:         func() do.ReservedIPsService { return tm.reservedIPs },
+		ReservedIPActions:   func() do.ReservedIPActionsService { return tm.reservedIPActions },
+		ReservedIPv6s:       func() do.ReservedIPv6sService { return tm.reservedIPv6s },
+		BYOIPPrefixes:       func() do.BYOIPPrefixsService { return tm.byoipPrefixes },
+		Droplets:            func() do.DropletsService { return tm.droplets },
+		DropletActions:      func() do.DropletActionsService { return tm.dropletActions },
+		DropletAutoscale:    func() do.DropletAutoscaleService { return tm.dropletAutoscale },
+		Domains:             func() do.DomainsService { return tm.domains },
+		Actions:             func() do.ActionsService { return tm.actions },
+		Account:             func() do.AccountService { return tm.account },
+		Balance:             func() do.BalanceService { return tm.balance },
+		BillingHistory:      func() do.BillingHistoryService { return tm.billingHistory },
+		Prepayment:          func() do.PrepaymentService { return tm.prepayment },
+		Invoices:            func() do.InvoicesService { return tm.invoices },
+		Tags:                func() do.TagsService { return tm.tags },
+		UptimeChecks:        func() do.UptimeChecksService { return tm.uptimeChecks },
+		Volumes:             func() do.VolumesService { return tm.volumes },
+		VolumeActions:       func() do.VolumeActionsService { return tm.volumeActions },
+		VPCNATGateways:      func() do.VPCNATGatewaysService { return tm.vpcNatGateways },
+		Snapshots:           func() do.SnapshotsService { return tm.snapshots },
+		Certificates:        func() do.CertificatesService { return tm.certificates },
+		LoadBalancers:       func() do.LoadBalancersService { return tm.loadBalancers },
+		Firewalls:           func() do.FirewallsService { return tm.firewalls },
+		CDNs:                func() do.CDNsService { return tm.cdns },
+		Projects:            func() do.ProjectsService { return tm.projects },
+		Kubernetes:          func() do.KubernetesService { return tm.kubernetes },
+		Databases:           func() do.DatabasesService { return tm.databases },
+		Registry:            func() do.RegistryService { return tm.registry },
+		Registries:          func() do.RegistriesService { return tm.registries },
+		VPCs:                func() do.VPCsService { return tm.vpcs },
+		OneClicks:           func() do.OneClickService { return tm.oneClick },
+		Apps:                func() do.AppsService { return tm.apps },
+		Monitoring:          func() do.MonitoringService { return tm.monitoring },
+		Insights:            func() do.InsightsService { return tm.insights },
+		Serverless:          func() do.ServerlessService { return tm.serverless },
+		OAuth:               func() do.OAuthService { return tm.oauth },
+		PartnerAttachments:  func() do.PartnerAttachmentsService { return tm.partnerAttachments },
+		SpacesKeys:          func() do.SpacesKeysService { return tm.spacesKeys },
+		AgentPlatform:       func() do.AgentPlatformService { return tm.agentPlatform },
+		DedicatedInferences: func() do.DedicatedInferenceService { return tm.dedicatedInferences },
+		Inference:           func() do.InferenceService { return tm.inference },
+		Nfs:                 func() do.NfsService { return tm.nfs },
+		NfsActions:          func() do.NfsActionsService { return tm.nfsActions },
+		MicroVMs:            func() do.MicroVMsService { return tm.microVMs },
+		Security:            func() do.SecurityService { return tm.security },
+		HostedAgents:        func() do.HostedAgentsService { return tm.hostedAgents },
+		HostedAgentTriggers: func() do.HostedAgentTriggersService { return tm.hostedAgentTriggers },
+		Secrets:             func() do.SecretsService { return tm.secrets },
+		VectorDBs:           func() do.VectorDBsService { return tm.vectorDBs },
+		Signals:             func() do.SignalsService { return tm.signals },
 	}
+
+	// Session commands warn when the session is bound to a reuse trigger.
+	// The lookup is best-effort; existing tests do not stub it.
+	prevLookup := lookupBoundTrigger
+	lookupBoundTrigger = func(*CmdConfig, string) (*do.HostedAgentTrigger, error) {
+		return nil, errors.New("not bound")
+	}
+	t.Cleanup(func() { lookupBoundTrigger = prevLookup })
 
 	tFn(config, tm)
 }

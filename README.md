@@ -5,8 +5,8 @@
 </p>
 
 <p align="center">
-  <a href="https://travis-ci.org/digitalocean/doctl">
-    <img src="https://travis-ci.org/digitalocean/doctl.svg?branch=main" alt="Build Status" />
+  <a href="https://github.com/digitalocean/doctl/actions/workflows/ci.yml">
+    <img src="https://github.com/digitalocean/doctl/actions/workflows/ci.yml/badge.svg" alt="Build Status" />
   </a>
   <a href="https://godoc.org/github.com/digitalocean/doctl">
     <img src="https://godoc.org/github.com/digitalocean/doctl?status.svg" alt="GoDoc" />
@@ -44,7 +44,7 @@ Available Commands:
 Flags:
   -t, --access-token string   API V2 access token
   -u, --api-url string        Override default API endpoint
-  -c, --config string         Specify a custom config file (default "$HOME/.config/doctl/config.yaml")
+  -c, --config string         Specify a custom config file
       --context string        Specify a custom authentication context name
   -h, --help                  help for doctl
   -o, --output string         Desired output format [text|json] (default "text")
@@ -68,10 +68,13 @@ See the [full reference documentation](https://www.digitalocean.com/docs/apis-cl
     - [Nix supported OS](#nix-supported-os)
   - [Docker Hub](#docker-hub)
   - [Downloading a Release from GitHub](#downloading-a-release-from-github)
+  - [Installing Beta Releases](#installing-beta-releases)
   - [Building with Docker](#building-with-docker)
   - [Building the Development Version from Source](#building-the-development-version-from-source)
   - [Dependencies](#dependencies)
 - [Authenticating with DigitalOcean](#authenticating-with-digitalocean)
+  - [Signing in with your browser](#signing-in-with-your-browser)
+  - [Using an API token](#using-an-api-token)
   - [Logging into multiple DigitalOcean accounts](#logging-into-multiple-digitalocean-accounts)
 - [Configuring Default Values](#configuring-default-values)
   - [Environment Variables](#environment-variables)
@@ -205,6 +208,81 @@ sudo mv ~/doctl /usr/local/bin
 
 Windows users can follow [How to: Add Tool Locations to the PATH Environment Variable](https://msdn.microsoft.com/en-us/library/office/ee537574(v=office.14).aspx) in order to add `doctl` to their `PATH`.
 
+### Installing Beta Releases
+
+New features are sometimes shipped in **beta releases** ahead of a general
+availability (GA) release so they can be tried out early. Beta releases are
+tagged `vX.Y.Z-beta.N` and published on the [Releases
+page](https://github.com/digitalocean/doctl/releases), marked as
+**"Pre-release"**.
+
+> **Note:** The package managers above (Homebrew, Snap, dnf) install the
+> latest **GA** release only — they do **not** include beta/preview features.
+> To use a preview feature, install the beta build with one of the methods
+> below. This is expected behavior, not a bug.
+
+#### Install a beta with `go install` (quickest)
+
+If you have a [Go environment](https://go.dev/doc/install) configured, the
+fastest way is to install a specific beta tag directly. Check the [Releases
+page](https://github.com/digitalocean/doctl/releases) for the latest `-beta`
+tag and use it in place of `v<version>-beta.<n>`:
+
+```
+go install github.com/digitalocean/doctl/cmd/doctl@v<version>-beta.<n>
+```
+
+This drops the `doctl` binary in `$(go env GOPATH)/bin`; make sure that
+directory is on your `PATH`.
+
+#### Build a beta from source
+
+With a configured [Go environment](https://go.dev/doc/install), build directly
+from the beta tag (or a feature branch):
+
+```
+git clone https://github.com/digitalocean/doctl.git
+cd doctl
+git checkout v<version>-beta.<n>
+go build -o doctl ./cmd/doctl
+sudo mv ./doctl /usr/local/bin
+```
+
+#### Download a prebuilt beta from GitHub (no Go required)
+
+If you don't have a Go environment, open the [Releases
+page](https://github.com/digitalocean/doctl/releases), choose the latest
+`-beta` release, and download the archive for your platform. For example, on
+GNU/Linux:
+
+```
+curl -sL https://github.com/digitalocean/doctl/releases/download/v<version>-beta.<n>/doctl-<version>-beta.<n>-linux-amd64.tar.gz | tar -xzv
+sudo mv ./doctl /usr/local/bin
+```
+
+If the asset filename pattern differs, copy the exact download URL from the
+release page rather than guessing it.
+
+#### Verify the installed version
+
+```
+doctl version
+```
+
+The reported version should match the `-beta` tag you installed. Beta builds
+may contain features that are still changing and are generally less stable than
+GA releases.
+
+#### Example
+
+For instance, to install the `v1.163.0-beta.2` tag with `go install`:
+
+```
+go install github.com/digitalocean/doctl/cmd/doctl@v1.163.0-beta.2
+doctl version
+# doctl version 1.163.0-beta.2-...
+```
+
 ### Building with Docker
 
 If you have
@@ -244,11 +322,37 @@ stable.
 
 ## Authenticating with DigitalOcean
 
-To use `doctl`, you need to authenticate with DigitalOcean by providing an access token, which can be created from the [Applications & API](https://cloud.digitalocean.com/account/api/tokens) section of the Control Panel. You can learn how to generate a token by following the [DigitalOcean API guide](https://www.digitalocean.com/community/tutorials/how-to-use-the-digitalocean-api-v2).
+`doctl` can authenticate in two ways: sign in through your browser with `doctl auth login`, or paste an API token with `doctl auth init`. Either way, the credentials are saved to an authentication context in the `doctl` configuration file.
 
 Docker users will have to use the `DIGITALOCEAN_ACCESS_TOKEN` environmental variable to authenticate, as explained in the Installation section of this document.
 
-If you're not using Docker to run `doctl`, authenticate with the `auth init` command.
+### Signing in with your browser
+
+`doctl auth login` signs you in without creating or pasting a token. It uses the OAuth 2.1 authorization code flow with PKCE, signing in as the `doctl` application DigitalOcean publishes, so there is nothing to register first.
+
+```
+doctl auth login
+```
+
+`doctl` opens your browser and waits while you approve the request. The authorization link is valid for 5 minutes; change that with `--timeout`. If the browser does not open, `doctl` prints the link so you can visit it yourself. On a machine with no browser, use `--no-browser` to print the link instead of opening one.
+
+By default you choose the permissions to grant on the authorization screen. To request them up front, pass `--scopes`:
+
+```
+doctl auth login --scopes "read write"
+```
+
+`--scopes "read write"` requests the same access a full-permission API token has. You can also name individual permissions, such as `--scopes "droplet:read account:read"`. Add `--save-scope` to reuse those scopes on later sign-ins, and `--scopes "" --save-scope` to clear the saved default.
+
+Access tokens issued this way are short-lived. `doctl` saves a refresh token alongside the access token and renews it automatically when you run a command, so you do not have to sign in again when the access token expires. Sign in again to change the granted scopes, or if the session is revoked.
+
+Without `--context`, signing in replaces the credentials in the `default` context and selects it. Pass `--context <name>` to sign in to a named context instead, leaving the context you were using unchanged.
+
+### Using an API token
+
+To authenticate with an API token instead, create one from the [Applications & API](https://cloud.digitalocean.com/account/api/tokens) section of the Control Panel. You can learn how to generate a token by following the [DigitalOcean API guide](https://www.digitalocean.com/community/tutorials/how-to-use-the-digitalocean-api-v2).
+
+Authenticate with the `auth init` command.
 
 ```
 doctl auth init
@@ -272,7 +376,7 @@ This will create the necessary directory structure and configuration file to sto
 
 `doctl` allows you to log in to multiple DigitalOcean accounts at the same time and easily switch between them with the use of authentication contexts.
 
-By default, a context named `default` is used. To create a new context, run `doctl auth init --context <new-context-name>`. You may also pass the new context's name using the `DIGITALOCEAN_CONTEXT` [environment variable](#environment-variables). You will be prompted for your API access token which will be associated with the new context.
+By default, a context named `default` is used. To create a new context, run `doctl auth login --context <new-context-name>` to sign in through your browser, or `doctl auth init --context <new-context-name>` to be prompted for an API token. You may also pass the new context's name using the `DIGITALOCEAN_CONTEXT` [environment variable](#environment-variables). The credentials are associated with the new context, and `doctl auth login` also selects it.
 
 To use a non-default context, pass the context name to any `doctl` command. For example:
 
@@ -280,9 +384,23 @@ To use a non-default context, pass the context name to any `doctl` command. For 
 doctl compute droplet list --context <new-context-name>
 ```
 
-To set a new default context, run `doctl auth switch --context <new-context-name>`. This command will save the current context to the config file and use it for all commands by default if a context is not specified.
+To set a new default context, run `doctl auth switch --context <new-context-name>`. This command will save the current context to the config file and use it for all commands by default if a context is not specified. To see the contexts you have, run `doctl auth list`; the selected one is marked `(current)`.
+
+A DigitalOcean token and an AMD DevCloud token belong in different contexts. `doctl auth init` checks a DigitalOcean token at `https://cloud.digitalocean.com/v1/oauth/token/info`. An AMD DevCloud token is checked at `https://devcloud.amd.com/v1/oauth/token/info`, so save it with `--token-validation-server`:
+
+```
+doctl auth init --context amd --token-validation-server https://devcloud.amd.com
+```
+
+`doctl auth switch` changes the token. It does not change the API host. Commands against the AMD API also need `--api-url https://api.devcloud.amd.com`. For a single command, without saving the token:
+
+```
+doctl --access-token $AMD_TOKEN --api-url https://api.devcloud.amd.com kubernetes cluster list
+```
 
 The `--access-token` flag or `DIGITALOCEAN_ACCESS_TOKEN` [environment variable](#environment-variables) are acknowledged only if the `default` context is used. Otherwise, they will have no effect on what API access token is used. To temporarily override the access token if a different context is set as default, use `doctl --context default --access-token your_DO_token ...`.
+
+When the `default` context is used, the flag and the environment variable take precedence over the token saved in your configuration file, and they apply only to the command you run: `doctl` does not write them to the file. The exception is `doctl auth init`, which saves the token it validates whatever its source, because saving a token is what that command is for. Run `doctl` with no arguments to see which account is active and whether its token came from your configuration file or from the environment.
 
 ## Configuring Default Values
 
@@ -292,9 +410,11 @@ On OS X, `doctl` saves its configuration as `${HOME}/Library/Application Support
 
 On Linux, `doctl` saves its configuration as `${XDG_CONFIG_HOME}/doctl/config.yaml` if the `${XDG_CONFIG_HOME}` environmental variable is set, or `~/.config/doctl/config.yaml` if it is not. On Windows, the config file location is `%APPDATA%\doctl\config.yaml`.
 
-The configuration file is automatically created and populated with default properties when you authenticate with `doctl` for the first time. The typical format for a property is `category.command.sub-command.flag: value`. For example, the property for the `force` flag with tag deletion is `tag.delete.force`.
+The configuration file is created when you authenticate with `doctl` for the first time. It holds your credentials plus any flag defaults you choose to set. `doctl` only writes the settings you ask it to save, so you set a default by adding the property yourself. The format for a property is `category.command.sub-command.flag: value`. For example, the property for the `force` flag with tag deletion is `tag.delete.force`.
 
-To change the default SSH user used when connecting to a Droplet with `doctl`, look for the `compute.ssh.ssh-user` property and change the value after the colon. In this example, we changed it to the username **sammy**.
+Configuration files written by older versions of `doctl` contain a large block of pre-populated properties. Those are still honored, and `doctl` leaves them alone; you can delete any you have not deliberately changed.
+
+To change the default SSH user used when connecting to a Droplet with `doctl`, add the `compute.ssh.ssh-user` property with the username you want. In this example, we set it to **sammy**.
 
 ```
 . . .
@@ -316,6 +436,35 @@ DIGITALOCEAN_CONTEXT=my-context doctl auth list
 ```
 # Use instead of --access-token argument
 DIGITALOCEAN_ACCESS_TOKEN=my-do-token doctl
+```
+
+These affect only the session, and `doctl` never writes them to `config.yaml`. `doctl auth init` is the exception: it saves the token it validates, so running it with `DIGITALOCEAN_ACCESS_TOKEN` set replaces the token stored for the `default` context with the one from your environment.
+
+Running `doctl` with no arguments prints a short summary of your version and
+authentication state, and tells you when a newer release is available:
+
+```
+Welcome to DigitalOcean
+doctl is the command line interface for the DigitalOcean API.
+
+  Version   1.146.0
+  Account   ✔ sammy@example.com
+  Team      Sharks
+  Context   default
+```
+
+The account line reflects what the API says about the token for your current
+context, so it distinguishes a working token from one that has been revoked. If
+the API cannot be reached, the token is reported as unverified rather than
+rejected. `Team` is shown when the token is scoped to a team, since the same
+login can belong to several.
+
+The release check contacts GitHub at most once a day and is skipped
+automatically in CI. Until you have authenticated, `doctl` makes no network
+requests at all. To turn the check off entirely:
+
+```
+DOCTL_NO_UPDATE_CHECK=1 doctl
 ```
 
 ## Enabling Shell Auto-Completion

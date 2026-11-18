@@ -121,13 +121,13 @@ var _ = suite("database/create/backup-restore", func(t *testing.T, when spec.G, 
 
 			output, err := cmd.CombinedOutput()
 			expect.Error(err)
-			expect.Equal(strings.TrimSpace(restoreFromTimestampError), strings.TrimSpace(string(output)))
+			expect.Equal(strings.TrimSpace(restoreFromTimestampError)+"\n→ run doctl databases create --help", strings.TrimSpace(string(output)))
 		})
 	})
 })
 
 const (
-	restoreFromTimestampError          = "Error: Invalid format for --restore-from-timestamp. Must be in UTC format: 2006-01-02 15:04:05 +0000 UTC"
+	restoreFromTimestampError          = "Error: invalid format for --restore-from-timestamp. Must be in UTC format: 2006-01-02 15:04:05 +0000 UTC"
 	databasesCreateRestoreBackUpOutput = `
 Notice: Database created
 ID         Name           Engine    Version         Number of Nodes    Region    Status      Size       URI                                                                                     Created At                       Storage (MiB)

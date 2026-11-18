@@ -69,6 +69,7 @@ var _ = suite("registry/repository/delete-manifest", func(t *testing.T, when spe
 			"registry",
 			"repository",
 			"delete-manifest",
+			"--registry", "my-registry",
 			"my-repo",
 			"sha256:5b0bcabd1ed22e9fb1310cf6c2dec7cdef19f0ad69efa1f392e94a4333501270",
 			"--force",
@@ -77,6 +78,6 @@ var _ = suite("registry/repository/delete-manifest", func(t *testing.T, when spe
 		output, err := cmd.CombinedOutput()
 		expect.NoError(err)
 
-		expect.Equal("", strings.TrimSpace(string(output)))
+		expect.Empty(strings.TrimSpace(string(output)))
 	})
 })

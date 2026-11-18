@@ -1,0 +1,63 @@
+package commands
+
+import (
+	"testing"
+
+	"github.com/digitalocean/doctl"
+	"github.com/digitalocean/doctl/do"
+	"github.com/digitalocean/godo"
+	"github.com/stretchr/testify/assert"
+)
+
+var (
+	testEvaluationMetricUUID = "88888888-8888-4888-8888-888888888888"
+
+	testEvaluationMetric = do.EvaluationMetric{
+		EvaluationMetric: &godo.EvaluationMetric{
+			MetricUUID: testEvaluationMetricUUID,
+			MetricName: "Task Success",
+			Source:     godo.EvaluationMetricSourceBuiltin,
+			Category:   godo.MetricCategoryCorrectness,
+			TurnType:   godo.EvaluationMetricTurnTypeSingleTurn,
+		},
+	}
+)
+
+func TestModelEvaluationMetricCommand(t *testing.T) {
+	cmd := ModelEvaluationMetricCmd()
+	assert.NotNil(t, cmd)
+	assertCommandNames(t, cmd, "list")
+}
+
+func TestModelEvaluationMetricList(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.agentPlatform.EXPECT().ListModelEvaluationMetrics(nil).
+			Return(do.EvaluationMetrics{testEvaluationMetric}, nil)
+
+		err := RunModelEvaluationMetricList(config)
+		assert.NoError(t, err)
+	})
+}
+
+func TestModelEvaluationMetricListTurnTypeFilter(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		config.Doit.Set(config.NS, doctl.ArgEvaluationTurnType, "multi_turn")
+
+		tm.agentPlatform.EXPECT().ListModelEvaluationMetrics(&godo.ModelEvaluationMetricListOptions{
+			TurnType: godo.EvaluationMetricTurnTypeMultiTurn,
+		}).Return(do.EvaluationMetrics{testEvaluationMetric}, nil)
+
+		err := RunModelEvaluationMetricList(config)
+		assert.NoError(t, err)
+	})
+}
+
+func TestModelEvaluationMetricListInvalidTurnType(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		config.Doit.Set(config.NS, doctl.ArgEvaluationTurnType, "foo")
+
+		err := RunModelEvaluationMetricList(config)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must be one of single_turn, multi_turn")
+	})
+}

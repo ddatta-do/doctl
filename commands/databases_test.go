@@ -1,7 +1,9 @@
 package commands
 
 import (
+	"bytes"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
@@ -36,6 +38,14 @@ var (
 		Hour: "10:00",
 	}
 
+	testGODOStorageAutoscaleThresholdPercent = 70
+	testGODOStorageAutoscaleIncrementGib     = uint64(20)
+	testGODOStorageAutoscale                 = &godo.DatabaseStorageAutoscale{
+		Enabled:          true,
+		ThresholdPercent: &testGODOStorageAutoscaleThresholdPercent,
+		IncrementGib:     &testGODOStorageAutoscaleIncrementGib,
+	}
+
 	testBackUpRestore = &godo.DatabaseBackupRestore{
 		DatabaseName:    "sunny-db-cluster",
 		BackupCreatedAt: "2023-02-01T17:32:15Z",
@@ -63,6 +73,12 @@ var (
 			PrivateNetworkUUID: "1fe49b6c-ac8e-11e9-98cb-3bec94f411bc",
 			Tags:               []string{"testing"},
 			StorageSizeMib:     20480,
+		},
+	}
+
+	testDBClusterCA = do.DatabaseCA{
+		DatabaseCA: &godo.DatabaseCA{
+			Certificate: []byte("QQDDC9jMGIwYzNiZS0wZjY4LTRkY4OCCAaIwDQYJKoZIhvcNAQ"),
 		},
 	}
 
@@ -120,6 +136,10 @@ var (
 
 	testDBMainWindow = do.DatabaseMaintenanceWindow{
 		DatabaseMaintenanceWindow: testGODOMainWindow,
+	}
+
+	testDBStorageAutoscale = do.DatabaseStorageAutoscale{
+		DatabaseStorageAutoscale: testGODOStorageAutoscale,
 	}
 
 	testDBBackup = do.DatabaseBackup{
@@ -201,8 +221,46 @@ var (
 		PostgreSQLConfig: &godo.PostgreSQLConfig{},
 	}
 
+	testAdvancedPostgresConfiguration = do.AdvancedPostgresConfig{
+		AdvancedPostgresConfig: &godo.AdvancedPostgresConfig{
+			PGParameters: []godo.AdvancedPostgresPGParameter{
+				{
+					Name:            "max_connections",
+					Value:           "100",
+					DefaultValue:    "100",
+					RequiresRestart: false,
+				},
+			},
+		},
+	}
+
+	testAdvancedMySQLConfiguration = do.AdvancedMySQLConfig{
+		AdvancedMySQLConfig: &godo.AdvancedMySQLConfig{
+			MySQLParameters: []godo.AdvancedMySQLParameter{
+				{
+					Name:            "max_connections",
+					Value:           "151",
+					DefaultValue:    "151",
+					RequiresRestart: false,
+				},
+			},
+		},
+	}
+
 	testRedisConfiguration = do.RedisConfig{
 		RedisConfig: &godo.RedisConfig{},
+	}
+
+	testMongoDBConfiguration = do.MongoDBConfig{
+		MongoDBConfig: &godo.MongoDBConfig{},
+	}
+
+	testKafkaConfiguration = do.KafkaConfig{
+		KafkaConfig: &godo.KafkaConfig{},
+	}
+
+	testOpensearchConfiguration = do.OpensearchConfig{
+		OpensearchConfig: &godo.OpensearchConfig{},
 	}
 
 	topicReplicationFactor = uint32(3)
@@ -244,6 +302,7 @@ func TestDatabasesCommand(t *testing.T) {
 	assertCommandNames(t, cmd,
 		"list",
 		"get",
+		"get-ca",
 		"create",
 		"delete",
 		"connection",
@@ -256,17 +315,29 @@ func TestDatabasesCommand(t *testing.T) {
 		"replica",
 		"options",
 		"maintenance-window",
+		"storage-autoscale",
 		"user",
 		"pool",
 		"db",
 		"sql-mode",
 		"configuration",
 		"topics",
+		"indexes",
 	)
 }
 
 func TestDatabaseMaintenanceWindowCommand(t *testing.T) {
 	cmd := databaseMaintenanceWindow()
+	assert.NotNil(t, cmd)
+	assertCommandNames(t, cmd,
+		"update",
+		"get",
+		"install",
+	)
+}
+
+func TestDatabaseStorageAutoscaleCommand(t *testing.T) {
+	cmd := databaseStorageAutoscale()
 	assert.NotNil(t, cmd)
 	assertCommandNames(t, cmd,
 		"update",
@@ -293,6 +364,7 @@ func TestDatabasePoolCommand(t *testing.T) {
 		"list",
 		"get",
 		"create",
+		"update",
 		"delete",
 	)
 }
@@ -372,6 +444,31 @@ func TestDatabasesGet(t *testing.T) {
 	// ID not provided
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		err := RunDatabaseGet(config)
+		assert.EqualError(t, doctl.NewMissingArgsErr(config.NS), err.Error())
+	})
+}
+
+func TestDatabasesGetCA(t *testing.T) {
+	// Successful call
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetCA(testDBCluster.ID).Return(&testDBClusterCA, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		err := RunDatabaseGetCA(config)
+		assert.NoError(t, err)
+	})
+
+	// Error
+	notFound := "not-found"
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetCA(notFound).Return(nil, errTest)
+		config.Args = append(config.Args, notFound)
+		err := RunDatabaseGetCA(config)
+		assert.Error(t, err)
+	})
+
+	// ID not provided
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		err := RunDatabaseGetCA(config)
 		assert.EqualError(t, doctl.NewMissingArgsErr(config.NS), err.Error())
 	})
 }
@@ -527,6 +624,23 @@ func TestDatabasesDelete(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	// Successful with wait flag
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		notFound := &godo.ErrorResponse{
+			Response: &http.Response{StatusCode: http.StatusNotFound},
+			Message:  "not found",
+		}
+		tm.databases.EXPECT().Delete(testDBCluster.ID).Return(nil)
+		tm.databases.EXPECT().Get(testDBCluster.ID).Return(nil, notFound)
+
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgForce, "true")
+		config.Doit.Set(config.NS, doctl.ArgCommandWait, true)
+
+		err := RunDatabaseDelete(config)
+		assert.NoError(t, err)
+	})
+
 	// Error
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.databases.EXPECT().Delete(testDBCluster.ID).Return(errTest)
@@ -551,6 +665,19 @@ func TestDatabaseMigrate(t *testing.T) {
 		config.Args = append(config.Args, testDBCluster.ID)
 		config.Doit.Set(config.NS, doctl.ArgRegionSlug, testDBCluster.RegionSlug)
 		config.Doit.Set(config.NS, doctl.ArgPrivateNetworkUUID, testDBCluster.PrivateNetworkUUID)
+
+		err := RunDatabaseMigrate(config)
+		assert.NoError(t, err)
+	})
+
+	// Success with wait flag
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().Migrate(testDBCluster.ID, r).Return(nil)
+		tm.databases.EXPECT().Get(testDBCluster.ID).Return(&testDBCluster, nil).AnyTimes() // Polling for status
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, testDBCluster.RegionSlug)
+		config.Doit.Set(config.NS, doctl.ArgPrivateNetworkUUID, testDBCluster.PrivateNetworkUUID)
+		config.Doit.Set(config.NS, doctl.ArgCommandWait, true)
 
 		err := RunDatabaseMigrate(config)
 		assert.NoError(t, err)
@@ -587,6 +714,29 @@ func TestDatabaseResize(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
+	// Success with wait flag
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		resized := do.Database{
+			Database: &godo.Database{
+				ID:             testDBCluster.ID,
+				SizeSlug:       testDBCluster.SizeSlug,
+				NumNodes:       testDBCluster.NumNodes,
+				StorageSizeMib: testDBCluster.StorageSizeMib,
+				Status:         "online",
+			},
+		}
+		tm.databases.EXPECT().Resize(testDBCluster.ID, r).Return(nil)
+		tm.databases.EXPECT().Get(testDBCluster.ID).Return(&resized, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, testDBCluster.SizeSlug)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseNumNodes, testDBCluster.NumNodes)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseStorageSizeMib, testDBCluster.StorageSizeMib)
+		config.Doit.Set(config.NS, doctl.ArgCommandWait, true)
+
+		err := RunDatabaseResize(config)
+		assert.NoError(t, err)
+	})
+
 	// Error
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.databases.EXPECT().Resize(testDBCluster.ID, r).Return(errTest)
@@ -598,6 +748,92 @@ func TestDatabaseResize(t *testing.T) {
 		err := RunDatabaseResize(config)
 		assert.EqualError(t, err, errTest.Error())
 	})
+}
+
+func TestIsDatabaseResizeComplete(t *testing.T) {
+	req := &godo.DatabaseResizeRequest{
+		SizeSlug:       "db-s-16vcpu-64gb",
+		NumNodes:       2,
+		StorageSizeMib: 2048000,
+	}
+
+	tests := []struct {
+		name string
+		db   *do.Database
+		req  *godo.DatabaseResizeRequest
+		want bool
+	}{
+		{
+			name: "online with matching size nodes and storage",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: true,
+		},
+		{
+			name: "still online with old size",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-1vcpu-2gb", NumNodes: 2, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "resizing status even with new size",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "mysql", Status: "resizing", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "online matching size and nodes but storage not yet updated",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 20480,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "storage omitted from request is not checked",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 20480,
+			}},
+			req:  &godo.DatabaseResizeRequest{SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2},
+			want: true,
+		},
+		{
+			name: "online with wrong node count",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "pg", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 1, StorageSizeMib: 2048000,
+			}},
+			req:  req,
+			want: false,
+		},
+		{
+			name: "redis skips storage check",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "redis", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 0,
+			}},
+			req:  req,
+			want: true,
+		},
+		{
+			name: "valkey skips storage check",
+			db: &do.Database{Database: &godo.Database{
+				EngineSlug: "valkey", Status: "online", SizeSlug: "db-s-16vcpu-64gb", NumNodes: 2, StorageSizeMib: 0,
+			}},
+			req:  req,
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isDatabaseResizeComplete(tt.db, tt.req))
+		})
+	}
 }
 
 func TestDatabaseListBackups(t *testing.T) {
@@ -789,6 +1025,98 @@ func TestDatabaseConnectionGet(t *testing.T) {
 	})
 }
 
+func TestMaskDatabaseConnection(t *testing.T) {
+	masked := maskDatabaseConnection(testDBConnection)
+
+	assert.Equal(t, databaseMaskedValue, masked.Password)
+	assert.NotContains(t, masked.URI, testGODOConnection.Password)
+	assert.Contains(t, masked.URI, databaseMaskedValue)
+	// Everything else about the connection is untouched.
+	assert.Equal(t, testGODOConnection.User, masked.User)
+	assert.Equal(t, testGODOConnection.Host, masked.Host)
+}
+
+func TestMaskDatabaseUser(t *testing.T) {
+	masked := maskDatabaseUser(testDBUser)
+
+	assert.Equal(t, databaseMaskedValue, masked.Password)
+	assert.Equal(t, testGODOUser.Name, masked.Name)
+	assert.Equal(t, testGODOUser.Role, masked.Role)
+}
+
+func TestMaskConnectionURIPassword(t *testing.T) {
+	tests := []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{
+			name: "a userinfo password is masked",
+			uri:  "postgres://doadmin:foobaz@example.com:25060/defaultdb?sslmode=require",
+			want: "postgres://doadmin:" + databaseMaskedValue + "@example.com:25060/defaultdb?sslmode=require",
+		},
+		{
+			name: "no userinfo at all is returned unchanged",
+			uri:  "postgres://example.com:25060/defaultdb",
+			want: "postgres://example.com:25060/defaultdb",
+		},
+		{
+			name: "a username with no password is returned unchanged",
+			uri:  "postgres://doadmin@example.com:25060/defaultdb",
+			want: "postgres://doadmin@example.com:25060/defaultdb",
+		},
+		{
+			name: "a malformed URI is returned unchanged rather than guessed at",
+			uri:  "://not a valid uri",
+			want: "://not a valid uri",
+		},
+		{
+			name: "empty is returned unchanged",
+			uri:  "",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, maskConnectionURIPassword(tt.uri))
+		})
+	}
+}
+
+func TestDatabaseConnectionGetMasksPasswordByDefault(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetConnection(testDBCluster.ID, false).Return(&testDBConnection, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Out = &bytes.Buffer{}
+		config.UI.Mask = true
+
+		err := RunDatabaseConnectionGet(config)
+		assert.NoError(t, err)
+
+		output := config.Out.(*bytes.Buffer).String()
+		assert.Contains(t, output, databaseMaskedValue)
+		assert.NotContains(t, output, testGODOConnection.Password)
+		assert.NotContains(t, output, "foobaz@", "the URI's embedded password must also be masked")
+	})
+}
+
+func TestDatabaseConnectionGetShowRevealsPassword(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetConnection(testDBCluster.ID, false).Return(&testDBConnection, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Out = &bytes.Buffer{}
+		config.UI.Mask = false
+
+		err := RunDatabaseConnectionGet(config)
+		assert.NoError(t, err)
+
+		output := config.Out.(*bytes.Buffer).String()
+		assert.Contains(t, output, testGODOConnection.Password)
+		assert.NotContains(t, output, databaseMaskedValue)
+	})
+}
+
 func TestDatabaseConnectionGetPrivate(t *testing.T) {
 	// Success
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
@@ -860,6 +1188,96 @@ func TestDatabaseUpdateMaintenance(t *testing.T) {
 	})
 }
 
+func TestDatabaseGetStorageAutoscale(t *testing.T) {
+	// Success
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetStorageAutoscale(testDBCluster.ID).Return(&testDBStorageAutoscale, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+
+		err := RunDatabaseStorageAutoscaleGet(config)
+		assert.NoError(t, err)
+	})
+
+	// Error
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetStorageAutoscale(testDBCluster.ID).Return(nil, errTest)
+		config.Args = append(config.Args, testDBCluster.ID)
+
+		err := RunDatabaseStorageAutoscaleGet(config)
+		assert.EqualError(t, err, errTest.Error())
+	})
+}
+
+func TestDatabaseUpdateStorageAutoscale(t *testing.T) {
+	defaultThreshold := defaultDatabaseStorageAutoscaleThresholdPercent
+	defaultIncrement := uint64(defaultDatabaseStorageAutoscaleIncrementGib)
+
+	rEnabled := &godo.DatabaseStorageAutoscale{
+		Enabled:          true,
+		ThresholdPercent: &defaultThreshold,
+		IncrementGib:     &defaultIncrement,
+	}
+	rDisabled := &godo.DatabaseStorageAutoscale{Enabled: false}
+
+	setStorageAutoscaleUpdateFlags := func(config *CmdConfig, enabled string) {
+		for _, child := range databaseStorageAutoscale().Commands() {
+			if child.Name() == "update" {
+				config.Command = child
+				break
+			}
+		}
+		assert.NotNil(t, config.Command)
+		assert.NoError(t, config.Command.Flags().Set(doctl.ArgDatabaseStorageAutoscaleEnabled, enabled))
+	}
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateStorageAutoscale(testDBCluster.ID, rEnabled).Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		setStorageAutoscaleUpdateFlags(config, "true")
+
+		err := RunDatabaseStorageAutoscaleUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateStorageAutoscale(testDBCluster.ID, rDisabled).Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		setStorageAutoscaleUpdateFlags(config, "false")
+
+		err := RunDatabaseStorageAutoscaleUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateStorageAutoscale(testDBCluster.ID, rEnabled).Return(errTest)
+		config.Args = append(config.Args, testDBCluster.ID)
+		setStorageAutoscaleUpdateFlags(config, "true")
+
+		err := RunDatabaseStorageAutoscaleUpdate(config)
+		assert.EqualError(t, err, errTest.Error())
+	})
+}
+
+func TestDatabaseInstallUpdate(t *testing.T) {
+
+	// Success
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().InstallUpdate(testDBCluster.ID).Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		err := RunDatabaseInstallUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// Error
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().InstallUpdate(testDBCluster.ID).Return(errTest)
+		config.Args = append(config.Args, testDBCluster.ID)
+
+		err := RunDatabaseInstallUpdate(config)
+		assert.EqualError(t, err, errTest.Error())
+	})
+}
+
 func TestDatabasesUserGet(t *testing.T) {
 	// Successful call
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
@@ -881,6 +1299,38 @@ func TestDatabasesUserGet(t *testing.T) {
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		err := RunDatabaseUserGet(config)
 		assert.EqualError(t, doctl.NewMissingArgsErr(config.NS), err.Error())
+	})
+}
+
+func TestDatabasesUserGetMasksPasswordByDefault(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetUser(testDBCluster.ID, testDBUser.Name).Return(&testDBUser, nil)
+		config.Args = append(config.Args, testDBCluster.ID, testDBUser.Name)
+		config.Out = &bytes.Buffer{}
+		config.UI.Mask = true
+
+		err := RunDatabaseUserGet(config)
+		assert.NoError(t, err)
+
+		output := config.Out.(*bytes.Buffer).String()
+		assert.Contains(t, output, databaseMaskedValue)
+		assert.NotContains(t, output, testGODOUser.Password)
+	})
+}
+
+func TestDatabasesUserGetShowRevealsPassword(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetUser(testDBCluster.ID, testDBUser.Name).Return(&testDBUser, nil)
+		config.Args = append(config.Args, testDBCluster.ID, testDBUser.Name)
+		config.Out = &bytes.Buffer{}
+		config.UI.Mask = false
+
+		err := RunDatabaseUserGet(config)
+		assert.NoError(t, err)
+
+		output := config.Out.(*bytes.Buffer).String()
+		assert.Contains(t, output, testGODOUser.Password)
+		assert.NotContains(t, output, databaseMaskedValue)
 	})
 }
 
@@ -955,6 +1405,29 @@ func TestDatabaseUserCreate(t *testing.T) {
 
 		config.Args = append(config.Args, testDBCluster.ID, testDBUser.Name)
 		config.Doit.Set(config.NS, doctl.ArgDatabaseUserKafkaACLs, "test:admin")
+
+		err := RunDatabaseUserCreate(config)
+		assert.NoError(t, err)
+	})
+
+	// Successful call with kafka acl set
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		r := &godo.DatabaseCreateUserRequest{
+			Name: testDBUser.Name,
+			Settings: &godo.DatabaseUserSettings{
+				OpenSearchACL: []*godo.OpenSearchACL{
+					{
+						Permission: "admin",
+						Index:      "test",
+					},
+				},
+			},
+		}
+
+		tm.databases.EXPECT().CreateUser(testDBCluster.ID, r).Return(&testDBUser, nil)
+
+		config.Args = append(config.Args, testDBCluster.ID, testDBUser.Name)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseUserOpenSearchACLs, "test:admin")
 
 		err := RunDatabaseUserCreate(config)
 		assert.NoError(t, err)
@@ -1166,6 +1639,55 @@ func TestDatabasePoolCreate_InboundUser(t *testing.T) {
 
 		config.Args = append(config.Args, testDBCluster.ID, testDBPool.Name)
 		err := RunDatabasePoolCreate(config)
+		assert.EqualError(t, err, "error")
+	})
+}
+
+func TestDatabasePoolUpdate(t *testing.T) {
+	pool := *(testDBPool.DatabasePool)
+	pool.Connection = nil
+
+	r := &godo.DatabaseUpdatePoolRequest{
+		User:     pool.User,
+		Mode:     pool.Mode,
+		Size:     pool.Size,
+		Database: pool.Database,
+	}
+
+	// Successful call
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetPool(testDBCluster.ID, pool.Name).Return(&do.DatabasePool{DatabasePool: &pool}, nil)
+		tm.databases.EXPECT().UpdatePool(testDBCluster.ID, pool.Name, r).Return(nil)
+
+		config.Args = append(config.Args, testDBCluster.ID, testDBPool.Name)
+		config.Doit.Set(config.NS, doctl.ArgDatabasePoolMode, testDBPool.Mode)
+		config.Doit.Set(config.NS, doctl.ArgDatabasePoolSize, testDBPool.Size)
+		config.Doit.Set(config.NS, doctl.ArgDatabasePoolDBName, testDBPool.Database)
+		config.Doit.Set(config.NS, doctl.ArgDatabasePoolUserName, testDBPool.User)
+
+		err := RunDatabasePoolUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// Error
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetPool(testDBCluster.ID, pool.Name).Return(&do.DatabasePool{
+			DatabasePool: &godo.DatabasePool{
+				User:     pool.User,
+				Name:     pool.Name,
+				Mode:     pool.Mode,
+				Size:     pool.Size,
+				Database: pool.Database,
+			},
+		}, nil)
+		tm.databases.EXPECT().UpdatePool(
+			testDBCluster.ID,
+			pool.Name,
+			gomock.AssignableToTypeOf(&godo.DatabaseUpdatePoolRequest{}),
+		).Return(errTest)
+
+		config.Args = append(config.Args, testDBCluster.ID, testDBPool.Name)
+		err := RunDatabasePoolUpdate(config)
 		assert.EqualError(t, err, "error")
 	})
 }
@@ -1516,9 +2038,59 @@ func TestDatabaseConfigurationGet(t *testing.T) {
 	})
 
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetAdvancedPostgresConfiguration(testDBCluster.ID).Return(&testAdvancedPostgresConfiguration, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_pg")
+
+		err := RunDatabaseConfigurationGet(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetAdvancedMySQLConfiguration(testDBCluster.ID).Return(&testAdvancedMySQLConfiguration, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_mysql")
+
+		err := RunDatabaseConfigurationGet(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		tm.databases.EXPECT().GetRedisConfiguration(testDBCluster.ID).Return(&testRedisConfiguration, nil)
 		config.Args = append(config.Args, testDBCluster.ID)
 		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "redis")
+
+		err := RunDatabaseConfigurationGet(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetMongoDBConfiguration(testDBCluster.ID).Return(&testMongoDBConfiguration, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "mongodb")
+
+		err := RunDatabaseConfigurationGet(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetKafkaConfiguration(testDBCluster.ID).Return(&testKafkaConfiguration, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "kafka")
+
+		err := RunDatabaseConfigurationGet(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().GetOpensearchConfiguration(testDBCluster.ID).Return(&testOpensearchConfiguration, nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "opensearch")
 
 		err := RunDatabaseConfigurationGet(config)
 
@@ -1543,6 +2115,110 @@ func TestDatabaseConfigurationGet(t *testing.T) {
 		config.Args = append(config.Args, testDBCluster.ID)
 
 		err := RunDatabaseConfigurationGet(config)
+
+		assert.Error(t, err)
+	})
+}
+
+func TestDatabaseConfigurationUpdate(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateMySQLConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "mysql")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdatePostgreSQLConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "pg")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateAdvancedPostgresConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_pg")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateAdvancedMySQLConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "advanced_mysql")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateRedisConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "redis")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateMongoDBConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "mongodb")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateKafkaConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "kafka")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.databases.EXPECT().UpdateOpensearchConfiguration(testDBCluster.ID, "").Return(nil)
+		config.Args = append(config.Args, testDBCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgDatabaseEngine, "opensearch")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.Equal(t, err, doctl.NewMissingArgsErr(config.NS))
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		config.Args = append(config.Args, testDBCluster.ID, "extra arg")
+
+		err := RunDatabaseConfigurationUpdate(config)
+
+		assert.Equal(t, err, doctl.NewTooManyArgsErr(config.NS))
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		config.Args = append(config.Args, testDBCluster.ID)
+
+		err := RunDatabaseConfigurationUpdate(config)
 
 		assert.Error(t, err)
 	})

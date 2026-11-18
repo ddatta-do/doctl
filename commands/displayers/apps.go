@@ -131,6 +131,105 @@ func (d Deployments) JSON(w io.Writer) error {
 	return e.Encode(d)
 }
 
+type JobInvocations []*godo.JobInvocation
+
+var _ Displayable = (*JobInvocations)(nil)
+
+func (ji JobInvocations) Cols() []string {
+	return []string{
+		"ID",
+		"Jobname",
+		"Created",
+		"Started",
+		"Completed",
+		"Phase",
+	}
+}
+
+func (ji JobInvocations) ColMap() map[string]string {
+	return map[string]string{
+		"ID":        "ID",
+		"Jobname":   "Job Name",
+		"Created":   "Created At",
+		"Started":   "Started At",
+		"Completed": "Completed At",
+		"Phase":     "Phase",
+	}
+}
+
+func (ji JobInvocations) KV() []map[string]any {
+	out := make([]map[string]any, len(ji))
+
+	for i, invocation := range ji {
+
+		out[i] = map[string]any{
+			"ID":        invocation.ID,
+			"Jobname":   invocation.JobName,
+			"Created":   invocation.CreatedAt,
+			"Started":   invocation.StartedAt,
+			"Completed": invocation.CompletedAt,
+			"Phase":     invocation.Phase,
+		}
+	}
+	return out
+}
+
+func (d JobInvocations) JSON(w io.Writer) error {
+	e := json.NewEncoder(w)
+	e.SetIndent("", "  ")
+	return e.Encode(d)
+}
+
+type Events []*godo.Event
+
+var _ Displayable = (*Events)(nil)
+
+func (e Events) Cols() []string {
+	return []string{
+		"ID",
+		"Type",
+		"DeploymentID",
+		"Created",
+		"Phase",
+	}
+}
+
+func (e Events) ColMap() map[string]string {
+	return map[string]string{
+		"ID":           "ID",
+		"Type":         "Type",
+		"DeploymentID": "Deployment ID",
+		"Created":      "Created At",
+		"Phase":        "Phase",
+	}
+}
+
+func (e Events) KV() []map[string]any {
+	out := make([]map[string]any, len(e))
+
+	for i, event := range e {
+		var phase string
+		if event.Autoscaling != nil {
+			phase = string(event.Autoscaling.Phase)
+		}
+
+		out[i] = map[string]any{
+			"ID":           event.ID,
+			"Type":         string(event.Type),
+			"DeploymentID": event.DeploymentID,
+			"Created":      event.CreatedAt,
+			"Phase":        phase,
+		}
+	}
+	return out
+}
+
+func (d Events) JSON(w io.Writer) error {
+	e := json.NewEncoder(w)
+	e.SetIndent("", "  ")
+	return e.Encode(d)
+}
+
 type AppRegions []*godo.AppRegion
 
 var _ Displayable = (*AppRegions)(nil)
@@ -501,4 +600,46 @@ func (b Buildpacks) JSON(w io.Writer) error {
 	e := json.NewEncoder(w)
 	e.SetIndent("", "  ")
 	return e.Encode(b)
+}
+
+type AppInstances []*godo.AppInstance
+
+var _ Displayable = (*AppInstances)(nil)
+
+func (a AppInstances) Cols() []string {
+	return []string{
+		"Name",
+		"ComponentName",
+		"ComponentType",
+		"InstanceAlias",
+	}
+}
+
+func (a AppInstances) ColMap() map[string]string {
+	return map[string]string{
+		"Name":          "Name",
+		"ComponentName": "ComponentName",
+		"ComponentType": "ComponentType",
+		"InstanceAlias": "InstanceAlias",
+	}
+}
+
+func (a AppInstances) KV() []map[string]any {
+	out := make([]map[string]any, len(a))
+
+	for i, appInstance := range a {
+		out[i] = map[string]any{
+			"Name":          appInstance.InstanceName,
+			"ComponentName": appInstance.ComponentName,
+			"ComponentType": appInstance.ComponentType,
+			"InstanceAlias": appInstance.InstanceAlias,
+		}
+	}
+	return out
+}
+
+func (a AppInstances) JSON(w io.Writer) error {
+	e := json.NewEncoder(w)
+	e.SetIndent("", "  ")
+	return e.Encode(a)
 }

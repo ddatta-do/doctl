@@ -18,6 +18,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -28,12 +30,14 @@ import (
 	"github.com/blang/semver"
 	"github.com/digitalocean/godo"
 	"github.com/google/uuid"
+	"github.com/pkg/browser"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/commands/displayers"
 	"github.com/digitalocean/doctl/do"
+	"github.com/digitalocean/doctl/internal/kubernetes/sso"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	kubeerrors "k8s.io/apimachinery/pkg/util/errors"
@@ -46,7 +50,11 @@ const (
 	maxAPIFailures            = 5
 	timeoutFetchingKubeconfig = 30 * time.Second
 
-	defaultKubernetesNodeSize      = "s-1vcpu-2gb"
+	// clusterPollInterval is how often a cluster is re-read while it
+	// provisions, which takes several minutes.
+	clusterPollInterval = 5 * time.Second
+
+	defaultKubernetesNodeSize      = "s-1vcpu-2gb-intel"
 	defaultKubernetesNodeCount     = 3
 	defaultKubernetesRegion        = "nyc1"
 	defaultKubernetesLatestVersion = "latest"
@@ -60,6 +68,14 @@ A typical workflow is to use ` + "`" + `doctl kubernetes cluster create` + "`" +
 
 The commands under ` + "`" + `doctl kubernetes options` + "`" + ` retrieve values used while creating clusters, such as the list of regions where cluster creation is supported.`
 )
+
+func init() {
+	// Borrowed from https://github.com/int128/kubelogin:
+	// In credential plugin mode, some browser launcher writes a message to stdout
+	// and it may break the credential json for client-go.
+	// This prevents the browser launcher from breaking the credential json.
+	browser.Stdout = os.Stderr
+}
 
 var getCurrentAuthContextFn = defaultGetCurrentAuthContextFn
 
@@ -116,10 +132,16 @@ func Kubernetes() *Command {
 	return cmd
 }
 
+type kubeconfigParams struct {
+	clusterID     string
+	expirySeconds int
+	cfgType       string
+}
+
 // KubeconfigProvider allows a user to read from a remote and local Kubeconfig, and write to a
 // local Kubeconfig.
 type KubeconfigProvider interface {
-	Remote(kube do.KubernetesService, clusterID string, expirySeconds int) (*clientcmdapi.Config, error)
+	Remote(kube do.KubernetesService, params kubeconfigParams) (*clientcmdapi.Config, error)
 	Local() (*clientcmdapi.Config, error)
 	Write(config *clientcmdapi.Config) error
 	ConfigPath() string
@@ -130,13 +152,13 @@ type kubeconfigProvider struct {
 }
 
 // Remote returns the kubeconfig for the cluster with the given ID from DOKS.
-func (p *kubeconfigProvider) Remote(kube do.KubernetesService, clusterID string, expirySeconds int) (*clientcmdapi.Config, error) {
+func (p *kubeconfigProvider) Remote(kube do.KubernetesService, params kubeconfigParams) (*clientcmdapi.Config, error) {
 	var kubeconfig []byte
 	var err error
-	if expirySeconds > 0 {
-		kubeconfig, err = kube.GetKubeConfigWithExpiry(clusterID, int64(expirySeconds))
+	if params.expirySeconds > 0 {
+		kubeconfig, err = kube.GetKubeConfigWithExpiry(params.clusterID, int64(params.expirySeconds))
 	} else {
-		kubeconfig, err = kube.GetKubeConfig(clusterID)
+		kubeconfig, err = kube.GetKubeConfig(params.clusterID, &godo.KubernetesClusterKubeconfigGetRequest{Type: params.cfgType})
 	}
 	if err != nil {
 		return nil, err
@@ -201,6 +223,9 @@ func (p *kubeconfigProvider) ConfigPath() string {
 // KubernetesCommandService is used to execute Kubernetes commands.
 type KubernetesCommandService struct {
 	KubeconfigProvider KubeconfigProvider
+
+	// to be used for stubbing in testss
+	ssoLogin func(ctx context.Context, clientID, issuerURL string, opts ...sso.LocalOIDCLoginOption) (string, time.Time, error)
 }
 
 func kubernetesCommandService() *KubernetesCommandService {
@@ -208,6 +233,7 @@ func kubernetesCommandService() *KubernetesCommandService {
 		KubeconfigProvider: &kubeconfigProvider{
 			pathOptions: clientcmd.NewDefaultPathOptions(),
 		},
+		ssoLogin: sso.GetIDToken,
 	}
 }
 
@@ -277,16 +303,61 @@ After creating a cluster, a configuration context is added to kubectl and made a
 		"A `slug` indicating which Kubernetes version to use when creating the cluster. Use the `doctl kubernetes options versions` command for a list of options")
 	AddStringFlag(cmdKubeClusterCreate, doctl.ArgClusterVPCUUID, "", "",
 		"The UUID of a VPC network to create the cluster in. Must be the UUID of a valid VPC in the same region specified for the cluster. If a VPC is not specified, the cluster is placed in the default VPC network for the region.")
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgWorkerSubnetUUID, "", "",
+		fmt.Sprintf("The UUID of the subnet to place worker nodes in. Must be a valid subnet in the cluster VPC. Requires that %s is also specified.", doctl.ArgClusterVPCUUID))
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgClusterSubnet, "", "",
+		"The CIDR block to use for the pod network. Must be a valid CIDR block. Defaults to `10.244.0.0/16`. If left empty/default the cluster will be created with a virtual network. If a custom one is provided, the cluster will be created as vpc-native cluster. VPC-native CIDR blocks cannot overlap within an account.")
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgServiceSubnet, "", "",
+		"The CIDR block to use for the service network. Must be a valid CIDR block. Defaults to `10.245.0.0/16`. If left empty/default the cluster will be created with a virtual network. If a custom one is provided, the cluster will be created as vpc-native cluster. VPC-native CIDR blocks cannot overlap within an account.")
 	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgAutoUpgrade, "", false,
 		"Enables automatic upgrades to new patch releases during the cluster's maintenance window. Defaults to `false`. To enable automatic upgrade, supply `--auto-upgrade=true`.")
 	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgSurgeUpgrade, "", true,
 		"Enables surge-upgrade for the cluster")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgIsolatedWorkers, "", false, "Enables isolated workers for the cluster. Defaults to `false`, To enable isolated workers for the cluster, supply `--isolated-workers=true`. NAT GW must be available in the vpc when this option is enabled.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgGPUOperatorReady, "", false,
+		"Launches GPU nodes in the cluster with images without GPU drivers, allowing GPU operators to manage drivers. Defaults to `false`. To enable it, supply `--gpu-operator-ready=true`. Mutually exclusive with other GPU-related cluster options.")
 	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgHA, "", false,
-		"Creates the cluster with a highly-available control plane. Defaults to false. To enable the HA control plane, supply --ha=true.")
-	AddStringFlag(cmdKubeClusterCreate, doctl.ArgEnableControlPlaneFirewall, "", "",
+		"Creates the cluster with a highly-available control plane. When omitted, API applies version-specific default (true for 1.36.0+; false for older). Use --ha to enable, --ha=false to disable.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableControlPlaneFirewall, "", false,
 		"Creates the cluster with control plane firewall enabled. Defaults to false. To enable the control plane firewall, supply --enable-control-plane-firewall=true.")
 	AddStringSliceFlag(cmdKubeClusterCreate, doctl.ArgControlPlaneFirewallAllowedAddresses, "", nil,
 		"A comma-separated list of allowed addresses that can access the control plane.")
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, "", "",
+		"The threshold value for the cluster autoscaler's scale-down-utilization-threshold. It is the maximum value between the sum of CPU requests and sum of memory requests of all pods running on the node divided by node's corresponding allocatable resource, below which a node can be considered for scale down. To set the scale-down-utilization-threshold to 50%, pass the floating point value 0.5.")
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgClusterAutoscalerScaleDownUnneededTime, "", "",
+		"The unneed time for the cluster autoscaler's scale-down-unneeded-time. It defines how long a node should be unneeded before it is eligible for scale down. To set the scale-down-unneeded-time to a minute and 30 seconds for example, pass the string '1m30s'.")
+	AddStringSliceFlag(cmdKubeClusterCreate, doctl.ArgClusterAutoscalerExpanders, "", nil,
+		"Customizes expanders used by cluster-autoscaler. The autoscaler will apply each expander from the provided comma-separated list to narrow down the selection of node types created to scale up, until either a single node type is left, or the list of expanders is exhausted. Available expanders: random, least-waste, priority. If this flag is empty, autoscaler will use its default expanders.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableRoutingAgent, "", false,
+		"Creates the cluster with routing-agent enabled. Defaults to false. To enable routing-agent, supply --enable-routing-agent=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnablePeerToPeerOciRegistryPlugin, "", false,
+		"Creates the cluster with Peer-to-peer OCI registry plugin enabled. Defaults to false. To enable it, supply --enable-peer-to-peer-oci-registry-plugin=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableNfsCsiPlugin, "", false,
+		"Creates the cluster with the NFS CSI plugin enabled. Defaults to false. To enable it, supply --enable-nfs-csi-plugin=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableCorednsAutoscaler, "", false,
+		"Creates the cluster with the CoreDNS Autoscaler enabled, which scales CoreDNS replicas in proportion to the cluster's size. When omitted, API applies version-specific default (true for 1.36.0+; false for older). Use --enable-coredns-autoscaler=false to disable.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableInsightsLogs, "", false,
+		"Opts the cluster in to sending its logs to Insights. This can only be set when creating a cluster. When omitted, the cluster is not opted in (equivalent to --enable-insights-logs=false). To opt in, supply --enable-insights-logs=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableAmdGpuDevicePlugin, "", false,
+		"Creates the cluster with amd gpu device plugin installed. Defaults to true for clusters with AMD GPUs and otherwise false. To always enable it, supply --enable-amd-gpu-device-plugin=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, "", false,
+		"Creates the cluster with amd gpu device metrics exporter plugin installed. Defaults to false. To enable it, supply --enable-amd-gpu-device-metrics-exporter-plugin=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableNvidiaGpuDevicePlugin, "", false,
+		"Creates the cluster with nvidia gpu device plugin installed. Defaults to true for clusters with NVIDIA GPUs and otherwise false. To always enable it, supply --enable-nvidia-gpu-device-plugin=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableNvidiaGpuDraDriver, "", false,
+		"Creates the cluster with the NVIDIA GPU DRA Driver installed. Mutually exclusive with --enable-nvidia-gpu-device-plugin. Defaults to false. To enable it, supply --enable-nvidia-gpu-dra-driver=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableAmdGpuDraDriver, "", false,
+		"Creates the cluster with the AMD GPU DRA Driver installed. Mutually exclusive with --enable-amd-gpu-device-plugin. Defaults to false. To enable it, supply --enable-amd-gpu-dra-driver=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgEnableRDMASharedDevicePlugin, "", false,
+		"Creates the cluster with k8s-rdma-shared-dev-plugin device plugin installed. Defaults to true for clusters with GPU nodes connected to a dedicated high-speed networking fabric. To always enable it, supply --enable-rdma-shared-device-plugin=true.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgKubernetesEnableSSO, "", false,
+		"Creates the cluster with SSO method of authentication enabled.")
+	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgKubernetesRequireSSO, "", false,
+		"Creates the cluster with SSO required as the only method of authentication.")
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgKubernetesSSOIssuerURL, "", "",
+		"OIDC issuer URL for the cluster SSO configuration.")
+	AddStringFlag(cmdKubeClusterCreate, doctl.ArgKubernetesSSOClientID, "", "",
+		"OIDC client ID for the cluster SSO configuration.")
 	AddStringSliceFlag(cmdKubeClusterCreate, doctl.ArgTag, "", nil,
 		"A comma-separated list of `tags` to apply to the cluster, in addition to the default tags of `k8s` and `k8s:$K8S_CLUSTER_ID`.")
 	AddStringFlag(cmdKubeClusterCreate, doctl.ArgSizeSlug, "",
@@ -312,7 +383,7 @@ Format: `+"`"+`"name=your-name;size=size_slug;count=5;tag=tag1;tag=tag2;label=ke
 
 	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgClusterUpdateKubeconfig, "", true,
 		"Adds a configuration context for the new cluster to your kubectl")
-	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgCommandWait, "", true,
+	AddWaitFlags(cmdKubeClusterCreate, true,
 		"Instructs the terminal to wait for the action to complete before returning control to the user")
 	AddBoolFlag(cmdKubeClusterCreate, doctl.ArgSetCurrentContext, "", true,
 		"Sets the current kubectl context to that of the new cluster")
@@ -331,10 +402,46 @@ Updates the configuration values for a Kubernetes cluster. The cluster must be r
 		"Indicates whether the cluster automatically upgrades to new patch releases during its maintenance window. To enable automatic upgrade, use `--auto-upgrade=true`.")
 	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgSurgeUpgrade, "", false,
 		"Enables surge-upgrade for the cluster")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgGPUOperatorReady, "", false,
+		"Launches GPU nodes in the cluster with images without GPU drivers, allowing GPU operators to manage drivers. To enable it, supply `--gpu-operator-ready=true`; to disable it, supply `--gpu-operator-ready=false`. Mutually exclusive with other GPU-related cluster options.")
 	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgHA, "", false,
 		"Enables the highly-available control plane for the cluster")
-	AddStringFlag(cmdKubeClusterUpdate, doctl.ArgEnableControlPlaneFirewall, "", "",
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableControlPlaneFirewall, "", false,
 		"Creates the cluster with control plane firewall enabled. Defaults to false. To enable the control plane firewall, supply --enable-control-plane-firewall=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableRoutingAgent, "", false,
+		"Creates the cluster with routing-agent enabled. Defaults to false. To enable routing-agent, supply --routing-agent=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnablePeerToPeerOciRegistryPlugin, "", false,
+		"Creates the cluster with Peer-to-peer OCI registry plugin enabled. Defaults to false. To enable it, supply --enable-peer-to-peer-oci-registry-plugin=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableNfsCsiPlugin, "", false,
+		"Updates the cluster with the NFS CSI plugin enabled. Defaults to false. To enable it, supply --enable-nfs-csi-plugin=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableCorednsAutoscaler, "", false,
+		"Creates the cluster with the CoreDNS Autoscaler enabled, which scales CoreDNS replicas in proportion to the cluster's size. When omitted, API applies version-specific default (true for 1.36.0+; false for older). To always enable it, supply --enable-coredns-autoscaler=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableAmdGpuDevicePlugin, "", false,
+		"Creates the cluster with amd gpu device plugin installed. Defaults to true for clusters with AMD GPUs and otherwise false. To always enable it, supply --enable-amd-gpu-device-plugin=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, "", false,
+		"Creates the cluster with amd gpu device metrics exporter plugin installed. Defaults to false. To enable it, supply --enable-amd-gpu-device-metrics-exporter-plugin=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableNvidiaGpuDevicePlugin, "", false,
+		"Creates the cluster with nvidia gpu device plugin installed. Defaults to true for clusters with NVIDIA GPUs and otherwise false. To always enable it, supply --enable-nvidia-gpu-device-plugin=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableNvidiaGpuDraDriver, "", false,
+		"Updates the cluster with the NVIDIA GPU DRA driver installed. Mutually exclusive with --enable-nvidia-gpu-device-plugin. Defaults to false. To enable it, supply --enable-nvidia-gpu-dra-driver=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableAmdGpuDraDriver, "", false,
+		"Updates the cluster with the AMD GPU DRA driver installed. Mutually exclusive with --enable-amd-gpu-device-plugin. Defaults to false. To enable it, supply --enable-amd-gpu-dra-driver=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgEnableRDMASharedDevicePlugin, "", false,
+		"Creates the cluster with k8s-rdma-shared-dev-plugin device plugin installed. Defaults to true for clusters with GPU nodes connected to a dedicated high-speed networking fabric. To always enable it, supply --enable-rdma-shared-device-plugin=true.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgKubernetesEnableSSO, "", false,
+		"Enables SSO method of authentication for the cluster.")
+	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgKubernetesRequireSSO, "", false,
+		"Sets up SSO method of authentication as required for the cluster.")
+	AddStringFlag(cmdKubeClusterUpdate, doctl.ArgKubernetesSSOIssuerURL, "", "",
+		"OIDC issuer URL for the cluster SSO configuration.")
+	AddStringFlag(cmdKubeClusterUpdate, doctl.ArgKubernetesSSOClientID, "", "",
+		"OIDC client ID for the cluster SSO configuration.")
+	AddStringFlag(cmdKubeClusterUpdate, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, "", "",
+		"The threshold value for the cluster autoscaler's scale-down-utilization-threshold. It is the maximum value between the sum of CPU requests and sum of memory requests of all pods running on the node divided by node's corresponding allocatable resource, below which a node can be considered for scale down. To set the scale-down-utilization-threshold to 50%, pass the floating point value 0.5.")
+	AddStringFlag(cmdKubeClusterUpdate, doctl.ArgClusterAutoscalerScaleDownUnneededTime, "", "",
+		"The unneed time for the cluster autoscaler's scale-down-unneeded-time. It defines how long a node should be unneeded before it is eligible for scale down. To set the scale-down-unneeded-time to a minute and 30 seconds for example, pass the string '1m30s'.")
+	AddStringSliceFlag(cmdKubeClusterUpdate, doctl.ArgClusterAutoscalerExpanders, "", nil,
+		"Customizes expanders used by cluster-autoscaler. The autoscaler will apply each expander from the provided comma-separated list to narrow down the selection of node types created to scale up, until either a single node type is left, or the list of expanders is exhausted. Available expanders: random, least-waste, priority. If this value is empty, autoscaler will use its default expanders. To unset expander customization, pass an empty string.")
 	AddStringSliceFlag(cmdKubeClusterUpdate, doctl.ArgControlPlaneFirewallAllowedAddresses, "", nil,
 		"A comma-separated list of allowed addresses that can access the control plane.")
 	AddBoolFlag(cmdKubeClusterUpdate, doctl.ArgClusterUpdateKubeconfig, "",
@@ -348,9 +455,9 @@ Updates the configuration values for a Kubernetes cluster. The cluster must be r
 	cmdKubeClusterUpgrade := CmdBuilder(cmd, k8sCmdService.RunKubernetesClusterUpgrade,
 		"upgrade <id|name>", "Upgrades a cluster to a new Kubernetes version", `
 
-Upgrades a Kubernetes cluster. By default, this upgrades the cluster to the latest available release, but you can also specify any version listed for your cluster by using `+"`"+`doctl k8s get-upgrades`+"`"+`.`, Writer)
+Upgrades a Kubernetes cluster. By default, this upgrades the cluster to the latest available release, but you can also specify any version listed for your cluster by using `+"`"+`doctl k8s cluster get-upgrades`+"`"+`.`, Writer)
 	AddStringFlag(cmdKubeClusterUpgrade, doctl.ArgClusterVersionSlug, "", "latest",
-		`The Kubernetes version to upgrade to. Use the `+"`"+`doctl k8s get-upgrades <cluster>`+"`"+` command for a list of available versions.
+		`The Kubernetes version to upgrade to. Use the `+"`"+`doctl k8s cluster get-upgrades <cluster>`+"`"+` command for a list of available versions.
 The special value `+"`"+`latest`+"`"+` selects the most recent patch version for your cluster's minor version.
 For example, if a cluster is on 1.12.1 and upgrades are available to 1.12.3 and 1.13.1, the `+"`"+`latest`+"`"+` flag upgrades the cluster to 1.12.3.`)
 	cmdKubeClusterUpgrade.Example = `The following example upgrades a cluster named ` + "`" + `example-cluster` + "`" + ` to version 1.28.2: doctl kubernetes cluster upgrade example-cluster --version 1.28.2-do.0`
@@ -409,19 +516,26 @@ func kubernetesKubeconfig() *Command {
 	cmdShowConfig := CmdBuilder(cmd, k8sCmdService.RunKubernetesKubeconfigShow, "show <cluster-id|cluster-name>", "Show a Kubernetes cluster's kubeconfig YAML", `
 Returns the raw YAML for the specified cluster's kubeconfig.`, Writer, aliasOpt("p", "g"))
 	AddIntFlag(cmdShowConfig, doctl.ArgKubeConfigExpirySeconds, "", 0,
-		"The length of time the cluster credentials are valid for, in seconds. By default, the credentials expire after seven days.")
+		"The length of time the cluster credentials are valid for, in seconds. By default, the credentials expire after seven days. If set, `token` kubeconfig type is implied.")
+	AddStringFlag(cmdShowConfig, doctl.ArgKubeConfigType, "", "",
+		"Kubeconfig authentication type: 'token', 'sso', or omit for the API default.")
 	cmdShowConfig.Example = `The following example shows the kubeconfig YAML for a cluster named ` + "`" + `example-cluster` + "`" + `: doctl kubernetes cluster kubeconfig show example-cluster`
 
 	execCredDesc := "INTERNAL: This hidden command is for printing a cluster's exec credential"
 	cmdExecCredential := CmdBuilder(cmd, k8sCmdService.RunKubernetesKubeconfigExecCredential, "exec-credential <cluster-id>", execCredDesc, execCredDesc, Writer, hiddenCmd())
 	AddStringFlag(cmdExecCredential, doctl.ArgVersion, "", "", "")
+	AddStringFlag(cmdExecCredential, doctl.ArgKubernetesSSOIssuerURL, "", "", "")
+	AddStringFlag(cmdExecCredential, doctl.ArgKubernetesSSOClientID, "", "", "")
+	AddIntFlag(cmdExecCredential, doctl.ArgKubernetesSSOLocalServerPort, "", 8080, "")
 
 	cmdSaveConfig := CmdBuilder(cmd, k8sCmdService.RunKubernetesKubeconfigSave, "save <cluster-id|cluster-name>", "Save a cluster's credentials to your local kubeconfig", `
 Adds the credentials for the specified cluster to your local kubeconfig. After this, your kubectl installation can directly manage the specified cluster.
 		`, Writer, aliasOpt("s"))
 	AddBoolFlag(cmdSaveConfig, doctl.ArgSetCurrentContext, "", true, "Sets the current kubectl context to that of the newest cluster in your account")
 	AddIntFlag(cmdSaveConfig, doctl.ArgKubeConfigExpirySeconds, "", 0,
-		"The length of time the cluster credentials are valid for, in seconds. By default, the credentials are automatically renewed as needed.")
+		"The length of time the cluster credentials are valid for, in seconds. By default, the credentials are automatically renewed as needed. If set, `token` kubeconfig type is implied.")
+	AddStringFlag(cmdSaveConfig, doctl.ArgKubeConfigType, "", "",
+		"Kubeconfig authentication type: 'token', 'sso', or omit for the API default.")
 	AddStringFlag(cmdSaveConfig, doctl.ArgKubernetesAlias, "", "", "An alias for the cluster context name. Defaults to 'do-[region]-[cluster-name]'")
 	cmdSaveConfig.Example = `The following example saves the credentials for a cluster named ` + "`" + `example-cluster` + "`" + ` to your local kubeconfig: doctl kubernetes cluster kubeconfig save example-cluster`
 
@@ -596,7 +710,7 @@ func kubernetesOneClicks() *Command {
 	cmdKubernetesOneClickList.Example = `The following example lists all available 1-click apps for Kubernetes: doctl kubernetes 1-click list`
 	cmdKubeOneClickInstall := CmdBuilder(cmd, RunKubernetesOneClickInstall, "install <cluster-id>", "Install 1-click apps on a Kubernetes cluster", "Installs 1-click applications on a Kubernetes cluster. Use the `--1-click` flag to specify one or multiple pieces of software to install on the cluster.", Writer, aliasOpt("in"), displayerType(&displayers.OneClick{}))
 	AddStringSliceFlag(cmdKubeOneClickInstall, doctl.ArgOneClicks, "", nil, "The 1-clicks application to install on the cluster. Multiple 1-clicks can be added simultaneously, for example: `--1-clicks moon,loki,netdata`")
-	cmdKubeOneClickInstall.Example = `The following example installs Loki and Netdata on a Kubernetes cluster with the ID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + `: doctl kubernetes 1-click install f81d4fae-7dec-11d0-a765-00a0c91e6bf6> --1-clicks loki,netdata`
+	cmdKubeOneClickInstall.Example = `The following example installs Loki and Netdata on a Kubernetes cluster with the ID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + `: doctl kubernetes 1-click install f81d4fae-7dec-11d0-a765-00a0c91e6bf6 --1-clicks loki,netdata`
 
 	return cmd
 }
@@ -631,7 +745,7 @@ func RunKubernetesOneClickInstall(c *CmdConfig) error {
 		return err
 	}
 
-	notice(oneClickInstall)
+	notice("%s", oneClickInstall)
 	return nil
 }
 
@@ -755,10 +869,17 @@ func (s *KubernetesCommandService) RunKubernetesClusterCreate(defaultNodeSize st
 		}
 
 		if wait {
-			notice("Cluster is provisioning, waiting for cluster to be running")
-			cluster, err = waitForClusterRunning(kube, cluster.ID)
+			w, err := newWaiter(c)
+			if err != nil {
+				return err
+			}
+
+			cluster, err = waitForClusterRunning(w, kube, cluster.ID)
 			if err != nil {
 				warn("Cluster couldn't enter `running` state: %v", err)
+			}
+			if cluster == nil {
+				return errors.New("cluster vanished while waiting for creation")
 			}
 		}
 
@@ -777,7 +898,7 @@ func (s *KubernetesCommandService) RunKubernetesClusterCreate(defaultNodeSize st
 			if err != nil {
 				warn("Failed to kick off 1-Click Application(s) install")
 			} else {
-				notice(messageResponse)
+				notice("%s", messageResponse)
 			}
 		}
 
@@ -831,7 +952,7 @@ func (s *KubernetesCommandService) tryUpdateKubeconfig(kube do.KubernetesService
 	ctx, cancel := context.WithTimeout(context.TODO(), timeoutFetchingKubeconfig)
 	defer cancel()
 	for {
-		remoteConfig, err = s.KubeconfigProvider.Remote(kube, clusterID, 0)
+		remoteConfig, err = s.KubeconfigProvider.Remote(kube, kubeconfigParams{clusterID: clusterID})
 		if err != nil {
 			select {
 			case <-ctx.Done():
@@ -843,7 +964,7 @@ func (s *KubernetesCommandService) tryUpdateKubeconfig(kube do.KubernetesService
 			break
 		}
 	}
-	if err := s.writeOrAddToKubeconfig(clusterID, remoteConfig, setCurrentContext, 0); err != nil {
+	if err := s.writeOrAddToKubeconfig(kubeconfigParams{clusterID: clusterID}, remoteConfig, setCurrentContext); err != nil {
 		warn("Couldn't write cluster credentials: %v", err)
 	}
 }
@@ -888,12 +1009,12 @@ func getUpgradeVersionOrLatest(c *CmdConfig, clusterID string) (string, bool, er
 
 	cluster, err := c.Kubernetes().Get(clusterID)
 	if err != nil {
-		return "", false, fmt.Errorf("Unable to look up cluster to find the latest version from the API: %v", err)
+		return "", false, fmt.Errorf("Unable to look up cluster to find the latest version from the API: %w", err)
 	}
 
 	versions, err := c.Kubernetes().GetUpgrades(clusterID)
 	if err != nil {
-		return "", false, fmt.Errorf("Unable to look up the latest version from the API: %v", err)
+		return "", false, fmt.Errorf("Unable to look up the latest version from the API: %w", err)
 	}
 	if len(versions) == 0 {
 		return "", false, nil
@@ -973,17 +1094,15 @@ func (s *KubernetesCommandService) RunKubernetesClusterDelete(c *CmdConfig) erro
 			return err
 		}
 
-		if force || AskForConfirmDelete("Kubernetes cluster", 1) == nil {
-			// continue
-		} else {
-			return fmt.Errorf("Operation aborted")
+		if err := confirmDelete(force, "Kubernetes cluster", 1); err != nil {
+			return err
 		}
 
 		var kubeconfig []byte
 		if update {
 			// get the cluster's kubeconfig before issuing the delete, so that we can
 			// cleanup the entry from the local file
-			kubeconfig, err = kube.GetKubeConfig(clusterID)
+			kubeconfig, err = kube.GetKubeConfig(clusterID, &godo.KubernetesClusterKubeconfigGetRequest{})
 			if err != nil {
 				warn("Couldn't get credentials for cluster. It will not be remove from your kubeconfig.")
 			}
@@ -1046,10 +1165,8 @@ func (s *KubernetesCommandService) RunKubernetesClusterDeleteSelective(c *CmdCon
 		return err
 	}
 
-	if force || AskForConfirmDelete("Kubernetes cluster", 1) == nil {
-		// continue
-	} else {
-		return fmt.Errorf("Operation aborted")
+	if err := confirmDelete(force, "Kubernetes cluster", 1); err != nil {
+		return err
 	}
 
 	kube := c.Kubernetes()
@@ -1058,7 +1175,7 @@ func (s *KubernetesCommandService) RunKubernetesClusterDeleteSelective(c *CmdCon
 	if update {
 		// get the cluster's kubeconfig before issuing the delete, so that we can
 		// cleanup the entry from the local file
-		kubeconfig, err = kube.GetKubeConfig(clusterID)
+		kubeconfig, err = kube.GetKubeConfig(clusterID, &godo.KubernetesClusterKubeconfigGetRequest{})
 		if err != nil {
 			warn("Couldn't get credentials for cluster. It will not be remove from your kubeconfig.")
 		}
@@ -1139,45 +1256,73 @@ func (s *KubernetesCommandService) RunKubernetesClusterListAssociatedResources(c
 
 // Kubeconfig
 
-// RunKubernetesKubeconfigShow retrieves an existing kubernetes config and prints it.
-func (s *KubernetesCommandService) RunKubernetesKubeconfigShow(c *CmdConfig) error {
+func kubeconfigParamsFromFlags(c *CmdConfig) (kubeconfigParams, error) {
+	params := kubeconfigParams{}
+
 	err := ensureOneArg(c)
 	if err != nil {
-		return err
+		return params, fmt.Errorf("validating command arguments: %w", err)
+	}
+	cfgType, err := c.Doit.GetString(c.NS, doctl.ArgKubeConfigType)
+	if err != nil {
+		return params, fmt.Errorf("parsing %s flag: %w", doctl.ArgKubeConfigType, err)
 	}
 	expirySeconds, err := c.Doit.GetInt(c.NS, doctl.ArgKubeConfigExpirySeconds)
 	if err != nil {
-		return err
+		return params, fmt.Errorf("parsing %s flag: %w", doctl.ArgKubeConfigExpirySeconds, err)
+	}
+	if expirySeconds > 0 && cfgType != "" {
+		return params, fmt.Errorf("cannot use %s flag with %s flag", doctl.ArgKubeConfigType, doctl.ArgKubeConfigExpirySeconds)
 	}
 
-	kube := c.Kubernetes()
 	clusterID, err := clusterIDize(c, c.Args[0])
 	if err != nil {
-		return err
+		return params, fmt.Errorf("getting cluster ID: %w", err)
 	}
 
-	var kubeconfig []byte
-	if expirySeconds > 0 {
-		kubeconfig, err = kube.GetKubeConfigWithExpiry(clusterID, int64(expirySeconds))
-	} else {
-		kubeconfig, err = kube.GetKubeConfig(clusterID)
-	}
+	params.clusterID = clusterID
+	params.expirySeconds = expirySeconds
+	params.cfgType = cfgType
+
+	return params, nil
+}
+
+// RunKubernetesKubeconfigShow retrieves an existing kubernetes config and prints it.
+func (s *KubernetesCommandService) RunKubernetesKubeconfigShow(c *CmdConfig) error {
+	kubeconfigParams, err := kubeconfigParamsFromFlags(c)
 	if err != nil {
 		return err
 	}
 
-	_, err = c.Out.Write(kubeconfig)
-	return err
+	kubeconfig, err := s.KubeconfigProvider.Remote(c.Kubernetes(), kubeconfigParams)
+	if err != nil {
+		return err
+	}
+	if kubeconfig == nil {
+		return fmt.Errorf("received nil kubeconfig")
+	}
+	kubeconfigBytes, err := clientcmd.Write(*kubeconfig)
+	if err != nil {
+		return fmt.Errorf("serializing kubeconfig: %w", err)
+	}
+	_, err = c.Out.Write(kubeconfigBytes)
+	if err != nil {
+		return fmt.Errorf("writing kubeconfig to output: %w", err)
+	}
+	return nil
 }
 
 func cachedExecCredentialPath(id string) string {
 	return filepath.Join(kubeconfigCachePath(), id+".json")
 }
 
+func cachedSSOExecCredentialPath(id string) string {
+	return filepath.Join(kubeconfigCachePath(), id+"_sso.json")
+}
+
 // loadCachedExecCredential attempts to load the cached exec credential from disk. Never errors
 // Returns nil if there's no credential, if it failed to load it, or if it's expired.
-func loadCachedExecCredential(id string) (*clientauthentication.ExecCredential, error) {
-	path := cachedExecCredentialPath(id)
+func loadCachedExecCredential(path string) (*clientauthentication.ExecCredential, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1210,7 +1355,7 @@ func loadCachedExecCredential(id string) (*clientauthentication.ExecCredential, 
 }
 
 // cacheExecCredential caches an ExecCredential to the doctl cache directory
-func cacheExecCredential(id string, execCredential *clientauthentication.ExecCredential) error {
+func cacheExecCredential(path string, execCredential *clientauthentication.ExecCredential) error {
 	// Don't bother caching if there's no expiration set
 	if execCredential.Status.ExpirationTimestamp.IsZero() {
 		return nil
@@ -1221,7 +1366,6 @@ func cacheExecCredential(id string, execCredential *clientauthentication.ExecCre
 		return err
 	}
 
-	path := cachedExecCredentialPath(id)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_TRUNC, os.FileMode(0600))
 	if err != nil {
 		return err
@@ -1247,31 +1391,73 @@ func (s *KubernetesCommandService) RunKubernetesKubeconfigExecCredential(c *CmdC
 		return fmt.Errorf("Invalid version %q, expected 'v1beta1'", version)
 	}
 
+	var isSSO bool
+	ssoIssuerURL, err := c.Doit.GetString(c.NS, doctl.ArgKubernetesSSOIssuerURL)
+	if err != nil {
+		return fmt.Errorf("Checking %s flag: %v", doctl.ArgKubernetesSSOIssuerURL, err)
+	}
+	ssoClientID, err := c.Doit.GetString(c.NS, doctl.ArgKubernetesSSOClientID)
+	if err != nil {
+		return fmt.Errorf("Checking %s flag: %v", doctl.ArgKubernetesSSOClientID, err)
+	}
+	if (ssoIssuerURL != "" && ssoClientID == "") || (ssoIssuerURL == "" && ssoClientID != "") {
+		return fmt.Errorf("Invalid SSO configuration: issuer URL and client ID must be provided together")
+	}
+	isSSO = (ssoIssuerURL != "" && ssoClientID != "")
+
 	kube := c.Kubernetes()
+	// it's important that we don't print anything to stdout since this command
+	// is used by kubectl which relies on stdout to contain _only_ the credential
+	logger := log.New(io.Discard, "", 0)
+	if Verbose {
+		logger = log.New(os.Stderr, "doctl: ", log.LstdFlags)
+	}
 
 	clusterID := c.Args[0]
-	execCredential, err := loadCachedExecCredential(clusterID)
+	cachePath := cachedExecCredentialPath(clusterID)
+	if isSSO {
+		// store SSO credentials separately so that, if a user switches from SSO to token auth (or vice versa),
+		// we stop using the cached credentials and instead fetch new ones
+		cachePath = cachedSSOExecCredentialPath(clusterID)
+	}
+	execCredential, err := loadCachedExecCredential(cachePath)
 	if err != nil && Verbose {
 		warn("%v", err)
 	}
 
 	if execCredential != nil {
+		logger.Println("Using cached credential")
 		return json.NewEncoder(c.Out).Encode(execCredential)
 	}
 
-	credentials, err := kube.GetCredentials(clusterID)
-	if err != nil {
-		if errResponse, ok := err.(*godo.ErrorResponse); ok {
-			return fmt.Errorf("Failed to fetch credentials for cluster %q: %v", clusterID, errResponse.Message)
+	var token string
+	var expiry time.Time
+	if isSSO {
+		logger.Println("SSO login")
+		ssoLocalServerPort, err := c.Doit.GetInt(c.NS, doctl.ArgKubernetesSSOLocalServerPort)
+		if err != nil {
+			return fmt.Errorf("Checking %s flag: %v", doctl.ArgKubernetesSSOLocalServerPort, err)
 		}
-		return err
-	}
 
-	status := &clientauthentication.ExecCredentialStatus{
-		ClientCertificateData: string(credentials.ClientCertificateData),
-		ClientKeyData:         string(credentials.ClientKeyData),
-		ExpirationTimestamp:   &metav1.Time{Time: credentials.ExpiresAt},
-		Token:                 credentials.Token,
+		if ssoLocalServerPort <= 1024 || ssoLocalServerPort > 65535 {
+			return fmt.Errorf("Invalid %s flag: %d", doctl.ArgKubernetesSSOLocalServerPort, ssoLocalServerPort)
+		}
+
+		token, expiry, err = s.ssoLogin(context.Background(), ssoClientID, ssoIssuerURL, sso.WithLocalServerPort(uint16(ssoLocalServerPort)), sso.WithLogger(logger))
+		if err != nil {
+			return fmt.Errorf("Failed to get ID token: %w", err)
+		}
+	} else {
+		logger.Println("DO PAT login")
+		credentials, err := kube.GetCredentials(clusterID)
+		if err != nil {
+			if errResponse, ok := err.(*godo.ErrorResponse); ok {
+				return fmt.Errorf("Failed to fetch credentials for cluster %q: %v", clusterID, errResponse.Message)
+			}
+			return err
+		}
+		expiry = credentials.ExpiresAt
+		token = credentials.Token
 	}
 
 	execCredential = &clientauthentication.ExecCredential{
@@ -1279,11 +1465,14 @@ func (s *KubernetesCommandService) RunKubernetesKubeconfigExecCredential(c *CmdC
 			Kind:       execCredentialKind,
 			APIVersion: clientauthentication.SchemeGroupVersion.String(),
 		},
-		Status: status,
+		Status: &clientauthentication.ExecCredentialStatus{
+			Token:               token,
+			ExpirationTimestamp: &metav1.Time{Time: expiry},
+		},
 	}
 
 	// Don't error out when caching credentials, just print it if we're being verbose
-	if err := cacheExecCredential(clusterID, execCredential); err != nil && Verbose {
+	if err := cacheExecCredential(cachePath, execCredential); err != nil && Verbose {
 		warn("%v", err)
 	}
 
@@ -1292,22 +1481,12 @@ func (s *KubernetesCommandService) RunKubernetesKubeconfigExecCredential(c *CmdC
 
 // RunKubernetesKubeconfigSave retrieves an existing kubernetes config and saves it to your local kubeconfig.
 func (s *KubernetesCommandService) RunKubernetesKubeconfigSave(c *CmdConfig) error {
-	err := ensureOneArg(c)
-	if err != nil {
-		return err
-	}
-	expirySeconds, err := c.Doit.GetInt(c.NS, doctl.ArgKubeConfigExpirySeconds)
+	kubeconfigParams, err := kubeconfigParamsFromFlags(c)
 	if err != nil {
 		return err
 	}
 
-	kube := c.Kubernetes()
-	clusterID, err := clusterIDize(c, c.Args[0])
-	if err != nil {
-		return err
-	}
-
-	remoteKubeconfig, err := s.KubeconfigProvider.Remote(kube, clusterID, expirySeconds)
+	remoteKubeconfig, err := s.KubeconfigProvider.Remote(c.Kubernetes(), kubeconfigParams)
 	if err != nil {
 		return err
 	}
@@ -1328,13 +1507,17 @@ func (s *KubernetesCommandService) RunKubernetesKubeconfigSave(c *CmdConfig) err
 		return err
 	}
 
-	path := cachedExecCredentialPath(clusterID)
-	_, err = os.Stat(path)
-	if err == nil {
-		os.Remove(path)
+	for _, path := range []string{
+		cachedExecCredentialPath(kubeconfigParams.clusterID),
+		cachedSSOExecCredentialPath(kubeconfigParams.clusterID),
+	} {
+		_, err = os.Stat(path)
+		if err == nil {
+			os.Remove(path)
+		}
 	}
 
-	return s.writeOrAddToKubeconfig(clusterID, remoteKubeconfig, setCurrentContext, expirySeconds)
+	return s.writeOrAddToKubeconfig(kubeconfigParams, remoteKubeconfig, setCurrentContext)
 }
 
 // RunKubernetesKubeconfigRemove retrieves an existing kubernetes config and removes it from your local kubeconfig.
@@ -1348,7 +1531,7 @@ func (s *KubernetesCommandService) RunKubernetesKubeconfigRemove(c *CmdConfig) e
 	if err != nil {
 		return err
 	}
-	kubeconfig, err := kube.GetKubeConfig(clusterID)
+	kubeconfig, err := kube.GetKubeConfig(clusterID, &godo.KubernetesClusterKubeconfigGetRequest{})
 	if err != nil {
 		return err
 	}
@@ -1487,15 +1670,10 @@ func (s *KubernetesCommandService) RunKubernetesNodePoolDelete(c *CmdConfig) err
 	if err != nil {
 		return err
 	}
-	if force || AskForConfirmDelete("Kubernetes node pool", 1) == nil {
-		kube := c.Kubernetes()
-		if err := kube.DeleteNodePool(clusterID, poolID); err != nil {
-			return err
-		}
-	} else {
-		return errOperationAborted
+	if err := confirmDelete(force, "Kubernetes node pool", 1); err != nil {
+		return err
 	}
-	return nil
+	return c.Kubernetes().DeleteNodePool(clusterID, poolID)
 }
 
 // RunKubernetesNodeDelete deletes a Kubernetes Node
@@ -1532,8 +1710,8 @@ func kubernetesNodeDelete(replace bool, c *CmdConfig) error {
 		msg = "replace this Kubernetes node?"
 	}
 
-	if !(force || AskForConfirm(msg) == nil) {
-		return errOperationAborted
+	if err := confirmAction(force, msg); err != nil {
+		return err
 	}
 
 	skipDrain, err := c.Doit.GetBool(c.NS, "skip-drain")
@@ -1633,6 +1811,28 @@ func buildClusterCreateRequestFromArgs(c *CmdConfig, r *godo.KubernetesClusterCr
 	// empty "" is fine, the default region VPC will be resolved
 	r.VPCUUID = vpcUUID
 
+	workerSubnetUUID, err := c.Doit.GetString(c.NS, doctl.ArgWorkerSubnetUUID)
+	if err != nil {
+		return err
+	}
+	r.WorkerSubnetUUID = workerSubnetUUID
+
+	podCIDR, err := c.Doit.GetString(c.NS, doctl.ArgClusterSubnet)
+	if err != nil {
+		return err
+	}
+	r.ClusterSubnet = podCIDR
+	svcCIDR, err := c.Doit.GetString(c.NS, doctl.ArgServiceSubnet)
+	if err != nil {
+		return err
+	}
+	r.ServiceSubnet = svcCIDR
+	// empty "" is fine, the default is still to use a virtual network and not be vpc-native.
+	// either both have to be set (vpc-native) or none (virtual network)
+	if c.Doit.IsSet(doctl.ArgClusterSubnet) != c.Doit.IsSet(doctl.ArgServiceSubnet) {
+		return fmt.Errorf("flags %q and %q both have to be set for vpc-native clusters or both unset for virtual network clusters", doctl.ArgClusterSubnet, doctl.ArgServiceSubnet)
+	}
+
 	version, err := getVersionOrLatest(c)
 	if err != nil {
 		return err
@@ -1651,24 +1851,202 @@ func buildClusterCreateRequestFromArgs(c *CmdConfig, r *godo.KubernetesClusterCr
 	}
 	r.SurgeUpgrade = surgeUpgrade
 
-	ha, err := c.Doit.GetBool(c.NS, doctl.ArgHA)
+	isolatedWorkers, err := c.Doit.GetBool(c.NS, doctl.ArgIsolatedWorkers)
+	if err != nil {
+		return err
+	}
+	r.IsolatedWorkers = isolatedWorkers
+
+	gpuOperatorReady, err := c.Doit.GetBool(c.NS, doctl.ArgGPUOperatorReady)
+	if err != nil {
+		return err
+	}
+	r.GPUOperatorReady = gpuOperatorReady
+
+	ha, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgHA)
 	if err != nil {
 		return err
 	}
 	r.HA = ha
 
-	enableControlPlaneFirewall, err := c.Doit.GetString(c.NS, doctl.ArgEnableControlPlaneFirewall)
+	enableControlPlaneFirewall, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableControlPlaneFirewall)
 	if err != nil {
 		return err
 	}
-	if enableControlPlaneFirewall != "" {
-		enableControlPlaneFirewallBool, err := strconv.ParseBool(enableControlPlaneFirewall)
+	if enableControlPlaneFirewall != nil {
+		r.ControlPlaneFirewall = &godo.KubernetesControlPlaneFirewall{
+			Enabled: enableControlPlaneFirewall,
+		}
+	}
+
+	enableRoutingAgent, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableRoutingAgent)
+	if err != nil {
+		return err
+	}
+	if enableRoutingAgent != nil {
+		r.RoutingAgent = &godo.KubernetesRoutingAgent{
+			Enabled: enableRoutingAgent,
+		}
+	}
+
+	enableP2pOciRegistryPlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin)
+	if err != nil {
+		return err
+	}
+	if enableP2pOciRegistryPlugin != nil {
+		r.P2pOciRegistryPlugin = &godo.KubernetesP2pOciRegistry{
+			Enabled: enableP2pOciRegistryPlugin,
+		}
+	}
+
+	enableNfsCsiPlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableNfsCsiPlugin)
+	if err != nil {
+		return err
+	}
+	if enableNfsCsiPlugin != nil {
+		r.NfsCsiPlugin = &godo.KubernetesNfsCsiPlugin{
+			Enabled: enableNfsCsiPlugin,
+		}
+	}
+
+	// Only forward the CoreDNS Autoscaler flag when the user explicitly sets it so the
+	// server-side defaulting (version-based) isn't suppressed by sending an unset "false".
+	if c.Doit.IsSet(doctl.ArgEnableCorednsAutoscaler) {
+		enableCorednsAutoscaler, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableCorednsAutoscaler)
 		if err != nil {
 			return err
 		}
-		r.ControlPlaneFirewall = &godo.KubernetesControlPlaneFirewall{
-			Enabled: &enableControlPlaneFirewallBool,
+		if enableCorednsAutoscaler != nil {
+			r.CorednsAutoscaler = &godo.KubernetesCorednsAutoscaler{
+				Enabled: enableCorednsAutoscaler,
+			}
 		}
+	}
+
+	// Only forward --enable-insights-logs when explicitly set; when omitted the API defaults to logs=false.
+	if c.Doit.IsSet(doctl.ArgEnableInsightsLogs) {
+		enableInsightsLogs, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableInsightsLogs)
+		if err != nil {
+			return err
+		}
+		if enableInsightsLogs != nil {
+			r.Insights = &godo.KubernetesInsightsTelemetryOptIn{
+				Logs: enableInsightsLogs,
+			}
+		}
+	}
+
+	// We need to differentiate here if the option is set or not, as it defaults to a different value on the server-side
+	// depending on whether there are AMD GPU nodes in the cluster or not.
+	// If we would always send "false", even if the flag isn't set, we would essentially disable the defaulting.
+	if c.Doit.IsSet(doctl.ArgEnableAmdGpuDevicePlugin) {
+		enableAmdGpuDevicePlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableAmdGpuDevicePlugin)
+		if err != nil {
+			return err
+		}
+		if enableAmdGpuDevicePlugin != nil {
+			r.AmdGpuDevicePlugin = &godo.KubernetesAmdGpuDevicePlugin{
+				Enabled: enableAmdGpuDevicePlugin,
+			}
+		}
+	}
+
+	enableAmdGpuDeviceMetricsExporterPlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin)
+	if err != nil {
+		return err
+	}
+	if enableAmdGpuDeviceMetricsExporterPlugin != nil {
+		r.AmdGpuDeviceMetricsExporterPlugin = &godo.KubernetesAmdGpuDeviceMetricsExporterPlugin{
+			Enabled: enableAmdGpuDeviceMetricsExporterPlugin,
+		}
+	}
+
+	// We need to differentiate here if the option is set or not, as it defaults to a different value on the server-side
+	// depending on whether there are NVIDIA GPU nodes in the cluster or not.
+	// If we would always send "false", even if the flag isn't set, we would essentially disable the defaulting.
+	if c.Doit.IsSet(doctl.ArgEnableNvidiaGpuDevicePlugin) {
+		enableNvidiaGpuDevicePlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableNvidiaGpuDevicePlugin)
+		if err != nil {
+			return err
+		}
+		if enableNvidiaGpuDevicePlugin != nil {
+			r.NvidiaGpuDevicePlugin = &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: enableNvidiaGpuDevicePlugin,
+			}
+		}
+	}
+
+	enableNvidiaGpuDraDriver, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableNvidiaGpuDraDriver)
+	if err != nil {
+		return err
+	}
+	if enableNvidiaGpuDraDriver != nil {
+		r.NvidiaGpuDraDriver = &godo.KubernetesNvidiaGpuDraDriver{
+			Enabled: enableNvidiaGpuDraDriver,
+		}
+	}
+
+	enableAmdGpuDraDriver, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableAmdGpuDraDriver)
+	if err != nil {
+		return err
+	}
+	if enableAmdGpuDraDriver != nil {
+		r.AmdGpuDraDriver = &godo.KubernetesAmdGpuDraDriver{
+			Enabled: enableAmdGpuDraDriver,
+		}
+	}
+
+	// We need to differentiate here if the option is set or not, as it defaults to a different value on the server-side
+	// depending on whether there are fabric connected GPU nodes in the cluster or not.
+	// If we would always send "false", even if the flag isn't set, we would essentially disable the defaulting.
+	if c.Doit.IsSet(doctl.ArgEnableRDMASharedDevicePlugin) {
+		enableRDMASharedDevicePlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableRDMASharedDevicePlugin)
+		if err != nil {
+			return err
+		}
+		if enableRDMASharedDevicePlugin != nil {
+			r.RdmaSharedDevicePlugin = &godo.KubernetesRdmaSharedDevicePlugin{
+				Enabled: enableRDMASharedDevicePlugin,
+			}
+		}
+	}
+
+	r.SSO, err = ssoConfigFromArgs(c)
+	if err != nil {
+		return fmt.Errorf("building SSO configuration: %w", err)
+	}
+
+	var clusterAutoscalerConfiguration = &godo.KubernetesClusterAutoscalerConfiguration{}
+	thresholdStr, err := c.Doit.GetString(c.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold)
+	if err != nil {
+		return err
+	}
+	if thresholdStr != "" {
+		scaleDownUtilizationThreshold, err := strconv.ParseFloat(thresholdStr, 64)
+		if err != nil {
+			return err
+		}
+		clusterAutoscalerConfiguration.ScaleDownUtilizationThreshold = &scaleDownUtilizationThreshold
+	}
+
+	unneededTime, err := c.Doit.GetString(c.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime)
+	if err != nil {
+		return err
+	}
+	if unneededTime != "" {
+		clusterAutoscalerConfiguration.ScaleDownUnneededTime = &unneededTime
+	}
+
+	expanders, expandersAreSet, err := c.Doit.GetStringSliceIsFlagSet(c.NS, doctl.ArgClusterAutoscalerExpanders)
+	if err != nil {
+		return err
+	}
+	if expandersAreSet {
+		clusterAutoscalerConfiguration.Expanders = expanders
+	}
+
+	if thresholdStr != "" || unneededTime != "" || expandersAreSet {
+		r.ClusterAutoscalerConfiguration = clusterAutoscalerConfiguration
 	}
 
 	controlPlaneFirewallAllowedAddresses, isSet, err := c.Doit.GetStringSliceIsFlagSet(c.NS, doctl.ArgControlPlaneFirewallAllowedAddresses)
@@ -1678,6 +2056,9 @@ func buildClusterCreateRequestFromArgs(c *CmdConfig, r *godo.KubernetesClusterCr
 	if isSet {
 		if r.ControlPlaneFirewall == nil {
 			r.ControlPlaneFirewall = &godo.KubernetesControlPlaneFirewall{}
+		}
+		for i := range controlPlaneFirewallAllowedAddresses {
+			controlPlaneFirewallAllowedAddresses[i] = strings.TrimSpace(controlPlaneFirewallAllowedAddresses[i])
 		}
 		r.ControlPlaneFirewall.AllowedAddresses = controlPlaneFirewallAllowedAddresses
 	}
@@ -1772,18 +2153,178 @@ func buildClusterUpdateRequestFromArgs(c *CmdConfig, r *godo.KubernetesClusterUp
 	}
 	r.HA = ha
 
-	enableControlPlaneFirewall, err := c.Doit.GetString(c.NS, doctl.ArgEnableControlPlaneFirewall)
+	gpuOperatorReady, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgGPUOperatorReady)
 	if err != nil {
 		return err
 	}
-	if enableControlPlaneFirewall != "" {
-		enableControlPlaneFirewallBool, err := strconv.ParseBool(enableControlPlaneFirewall)
+	r.GPUOperatorReady = gpuOperatorReady
+
+	enableControlPlaneFirewall, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableControlPlaneFirewall)
+	if err != nil {
+		return err
+	}
+	if enableControlPlaneFirewall != nil {
+		r.ControlPlaneFirewall = &godo.KubernetesControlPlaneFirewall{
+			Enabled: enableControlPlaneFirewall,
+		}
+	}
+
+	enableRoutingAgent, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableRoutingAgent)
+	if err != nil {
+		return err
+	}
+	if enableRoutingAgent != nil {
+		r.RoutingAgent = &godo.KubernetesRoutingAgent{
+			Enabled: enableRoutingAgent,
+		}
+	}
+
+	enableP2pOciRegistryPlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin)
+	if err != nil {
+		return err
+	}
+	if enableP2pOciRegistryPlugin != nil {
+		r.P2pOciRegistryPlugin = &godo.KubernetesP2pOciRegistry{
+			Enabled: enableP2pOciRegistryPlugin,
+		}
+	}
+
+	enableNfsCsiPlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableNfsCsiPlugin)
+	if err != nil {
+		return err
+	}
+	if enableNfsCsiPlugin != nil {
+		r.NfsCsiPlugin = &godo.KubernetesNfsCsiPlugin{
+			Enabled: enableNfsCsiPlugin,
+		}
+	}
+
+	// Only forward the CoreDNS Autoscaler flag when the user explicitly sets it so we don't
+	// disable existing state on a no-op update by sending an unset "false".
+	if c.Doit.IsSet(doctl.ArgEnableCorednsAutoscaler) {
+		enableCorednsAutoscaler, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableCorednsAutoscaler)
 		if err != nil {
 			return err
 		}
-		r.ControlPlaneFirewall = &godo.KubernetesControlPlaneFirewall{
-			Enabled: &enableControlPlaneFirewallBool,
+		if enableCorednsAutoscaler != nil {
+			r.CorednsAutoscaler = &godo.KubernetesCorednsAutoscaler{
+				Enabled: enableCorednsAutoscaler,
+			}
 		}
+	}
+
+	// We need to differentiate here if the option is set or not, as it defaults to a different value on the server-side
+	// depending on whether there are AMD GPU nodes in the cluster or not.
+	//
+	// If we would always send "false", even if the flag isn't set, we would essentially disable the defaulting.
+	if c.Doit.IsSet(doctl.ArgEnableAmdGpuDevicePlugin) {
+		enableAmdGpuDevicePlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableAmdGpuDevicePlugin)
+		if err != nil {
+			return err
+		}
+		if enableAmdGpuDevicePlugin != nil {
+			r.AmdGpuDevicePlugin = &godo.KubernetesAmdGpuDevicePlugin{
+				Enabled: enableAmdGpuDevicePlugin,
+			}
+		}
+	}
+
+	enableAmdGpuDeviceMetricsExporterPlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin)
+	if err != nil {
+		return err
+	}
+	if enableAmdGpuDeviceMetricsExporterPlugin != nil {
+		r.AmdGpuDeviceMetricsExporterPlugin = &godo.KubernetesAmdGpuDeviceMetricsExporterPlugin{
+			Enabled: enableAmdGpuDeviceMetricsExporterPlugin,
+		}
+	}
+
+	// We need to differentiate here if the option is set or not, as it defaults to a different value on the server-side
+	// depending on whether there are NVIDIA GPU nodes in the cluster or not.
+	// If we would always send "false", even if the flag isn't set, we would essentially disable the defaulting.
+	if c.Doit.IsSet(doctl.ArgEnableNvidiaGpuDevicePlugin) {
+		enableNvidiaGpuDevicePlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableNvidiaGpuDevicePlugin)
+		if err != nil {
+			return err
+		}
+		if enableNvidiaGpuDevicePlugin != nil {
+			r.NvidiaGpuDevicePlugin = &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: enableNvidiaGpuDevicePlugin,
+			}
+		}
+	}
+
+	enableNvidiaGpuDraDriver, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableNvidiaGpuDraDriver)
+	if err != nil {
+		return err
+	}
+	if enableNvidiaGpuDraDriver != nil {
+		r.NvidiaGpuDraDriver = &godo.KubernetesNvidiaGpuDraDriver{
+			Enabled: enableNvidiaGpuDraDriver,
+		}
+	}
+
+	enableAmdGpuDraDriver, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableAmdGpuDraDriver)
+	if err != nil {
+		return err
+	}
+	if enableAmdGpuDraDriver != nil {
+		r.AmdGpuDraDriver = &godo.KubernetesAmdGpuDraDriver{
+			Enabled: enableAmdGpuDraDriver,
+		}
+	}
+
+	// We need to differentiate here if the option is set or not, as it defaults to a different value on the server-side
+	// depending on whether there are fabric connected GPU nodes in the cluster or not.
+	// If we would always send "false", even if the flag isn't set, we would essentially disable the defaulting.
+	if c.Doit.IsSet(doctl.ArgEnableRDMASharedDevicePlugin) {
+		enableRDMASharedDevicePlugin, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgEnableRDMASharedDevicePlugin)
+		if err != nil {
+			return err
+		}
+		if enableRDMASharedDevicePlugin != nil {
+			r.RdmaSharedDevicePlugin = &godo.KubernetesRdmaSharedDevicePlugin{
+				Enabled: enableRDMASharedDevicePlugin,
+			}
+		}
+	}
+
+	r.SSO, err = ssoConfigFromArgs(c)
+	if err != nil {
+		return fmt.Errorf("building SSO configuration: %w", err)
+	}
+
+	var clusterAutoscalerConfiguration = &godo.KubernetesClusterAutoscalerConfiguration{}
+	thresholdStr, err := c.Doit.GetString(c.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold)
+	if err != nil {
+		return err
+	}
+	if thresholdStr != "" {
+		scaleDownUtilizationThreshold, err := strconv.ParseFloat(thresholdStr, 64)
+		if err != nil {
+			return err
+		}
+		clusterAutoscalerConfiguration.ScaleDownUtilizationThreshold = &scaleDownUtilizationThreshold
+	}
+
+	unneededTime, err := c.Doit.GetString(c.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime)
+	if err != nil {
+		return err
+	}
+	if unneededTime != "" {
+		clusterAutoscalerConfiguration.ScaleDownUnneededTime = &unneededTime
+	}
+
+	expanders, expandersAreSet, err := c.Doit.GetStringSliceIsFlagSet(c.NS, doctl.ArgClusterAutoscalerExpanders)
+	if err != nil {
+		return err
+	}
+	if expandersAreSet {
+		clusterAutoscalerConfiguration.Expanders = expanders
+	}
+
+	if thresholdStr != "" || unneededTime != "" || expandersAreSet {
+		r.ClusterAutoscalerConfiguration = clusterAutoscalerConfiguration
 	}
 
 	controlPlaneFirewallAllowedAddresses, isSet, err := c.Doit.GetStringSliceIsFlagSet(c.NS, doctl.ArgControlPlaneFirewallAllowedAddresses)
@@ -1793,6 +2334,9 @@ func buildClusterUpdateRequestFromArgs(c *CmdConfig, r *godo.KubernetesClusterUp
 	if isSet {
 		if r.ControlPlaneFirewall == nil {
 			r.ControlPlaneFirewall = &godo.KubernetesControlPlaneFirewall{}
+		}
+		for i := range controlPlaneFirewallAllowedAddresses {
+			controlPlaneFirewallAllowedAddresses[i] = strings.TrimSpace(controlPlaneFirewallAllowedAddresses[i])
 		}
 		r.ControlPlaneFirewall.AllowedAddresses = controlPlaneFirewallAllowedAddresses
 	}
@@ -2037,7 +2581,7 @@ func buildNodePoolUpdateRequestFromArgs(c *CmdConfig, r *godo.KubernetesNodePool
 	return nil
 }
 
-func (s *KubernetesCommandService) writeOrAddToKubeconfig(clusterID string, remoteKubeconfig *clientcmdapi.Config, setCurrentContext bool, expirySeconds int) error {
+func (s *KubernetesCommandService) writeOrAddToKubeconfig(kubeconfigParams kubeconfigParams, remoteKubeconfig *clientcmdapi.Config, setCurrentContext bool) error {
 	localKubeconfig, err := s.KubeconfigProvider.Local()
 	if err != nil {
 		return err
@@ -2045,7 +2589,7 @@ func (s *KubernetesCommandService) writeOrAddToKubeconfig(clusterID string, remo
 
 	kubectlDefaults := s.KubeconfigProvider.ConfigPath()
 	notice("Adding cluster credentials to kubeconfig file found in %q", kubectlDefaults)
-	if err := mergeKubeconfig(clusterID, remoteKubeconfig, localKubeconfig, setCurrentContext, expirySeconds); err != nil {
+	if err := mergeKubeconfig(kubeconfigParams, remoteKubeconfig, localKubeconfig, setCurrentContext); err != nil {
 		return fmt.Errorf("Couldn't use the kubeconfig info received, %v", err)
 	}
 
@@ -2072,7 +2616,7 @@ func removeFromKubeconfig(kubeconfig []byte) error {
 // mergeKubeconfig merges a remote cluster's config file with a local config file,
 // assuming that the current context in the remote config file points to the
 // cluster details to add to the local config.
-func mergeKubeconfig(clusterID string, remote, local *clientcmdapi.Config, setCurrentContext bool, expirySeconds int) error {
+func mergeKubeconfig(kubeconfigParams kubeconfigParams, remote, local *clientcmdapi.Config, setCurrentContext bool) error {
 	remoteCtx, ok := remote.Contexts[remote.CurrentContext]
 	if !ok {
 		// this is a bug in the backend, we received incomplete/non-sensical data
@@ -2096,14 +2640,26 @@ func mergeKubeconfig(clusterID string, remote, local *clientcmdapi.Config, setCu
 		local.CurrentContext = remote.CurrentContext
 	}
 
+	remoteAuthInfo, ok := remote.AuthInfos[remoteCtx.AuthInfo]
+	if !ok {
+		// this is a bug in the backend, we received incomplete/non-sensical data
+		return fmt.Errorf("The remote config has no auth info for user %q. This is a bug, please open a ticket with DigitalOcean.",
+			remoteCtx.AuthInfo,
+		)
+	}
+	remoteKubeconfigType := "token"
+	if remoteAuthInfo.Token == "" {
+		remoteKubeconfigType = "sso"
+	}
+
 	switch {
-	case expirySeconds > 0:
+	case remoteKubeconfigType == "token" && kubeconfigParams.expirySeconds > 0:
 		// When expirySeconds is passed, token based auth should be used as
 		// credentials should expire and not be renewed automatically
 		local.AuthInfos[remoteCtx.AuthInfo] = &clientcmdapi.AuthInfo{
-			Token: remote.AuthInfos[remoteCtx.AuthInfo].Token,
+			Token: remoteAuthInfo.Token,
 		}
-	default:
+	case remoteKubeconfigType == "token" && kubeconfigParams.expirySeconds == 0:
 		// Configure kubectl to call doctl to renew credentials automatically
 		local.AuthInfos[remoteCtx.AuthInfo] = &clientcmdapi.AuthInfo{
 			Exec: &clientcmdapi.ExecConfig{
@@ -2116,10 +2672,14 @@ func mergeKubeconfig(clusterID string, remote, local *clientcmdapi.Config, setCu
 					"exec-credential",
 					"--version=v1beta1",
 					"--context=" + getCurrentAuthContextFn(),
-					clusterID,
+					kubeconfigParams.clusterID,
 				},
 			},
 		}
+	case remoteKubeconfigType == "sso":
+		local.AuthInfos[remoteCtx.AuthInfo] = remoteAuthInfo.DeepCopy()
+		// in case doctl command is not in the PATH or is renamed
+		local.AuthInfos[remoteCtx.AuthInfo].Exec.Command = doctl.CommandName()
 	}
 
 	return nil
@@ -2148,41 +2708,53 @@ func removeKubeconfig(remote, local *clientcmdapi.Config) error {
 }
 
 // waitForClusterRunning waits for a cluster to be running.
-func waitForClusterRunning(kube do.KubernetesService, clusterID string) (*do.KubernetesCluster, error) {
-	failCount := 0
-	printNewLineSet := false
-	for i := 0; ; i++ {
-		if i != 0 {
-			fmt.Fprint(os.Stderr, ".")
-			if !printNewLineSet {
-				printNewLineSet = true
-				defer fmt.Fprintln(os.Stderr)
-			}
-		}
+//
+// The cluster last read is returned however the wait ends, so that a caller
+// reporting a wait that did not reach `running` can still say what state the
+// cluster is actually in. Returning nil there would have the caller announce
+// that the cluster had vanished when it is merely still provisioning.
+func waitForClusterRunning(w waiter, kube do.KubernetesService, clusterID string) (*do.KubernetesCluster, error) {
+	var (
+		last     *do.KubernetesCluster
+		failures int
+	)
+
+	err := w.wait(waitOp{
+		Activity: fmt.Sprintf("Creating cluster (%s)", clusterID),
+		Subject:  fmt.Sprintf("cluster (%s) to start running", clusterID),
+		Success:  fmt.Sprintf("Cluster (%s) is running", clusterID),
+		Interval: clusterPollInterval,
+	}, func() (bool, string, error) {
 		cluster, err := kube.Get(clusterID)
 		if err == nil {
-			failCount = 0
+			failures = 0
 		} else {
-			// Allow for transient API failures
-			failCount++
-			if failCount >= maxAPIFailures {
-				return nil, err
+			// Provisioning outlives the odd 5xx, so a handful of consecutive
+			// API failures is tolerated before the wait is abandoned.
+			failures++
+			if failures >= maxAPIFailures {
+				return false, "", err
 			}
 		}
 
 		if cluster == nil || cluster.Status == nil {
-			time.Sleep(1 * time.Second)
-			continue
+			return false, "", nil
 		}
-		switch cluster.Status.State {
+
+		last = cluster
+
+		state := cluster.Status.State
+		switch state {
 		case godo.KubernetesClusterStatusRunning:
-			return cluster, nil
+			return true, string(state), nil
 		case godo.KubernetesClusterStatusProvisioning:
-			time.Sleep(5 * time.Second)
+			return false, string(state), nil
 		default:
-			return cluster, fmt.Errorf("Unknown status: [%s]", cluster.Status.State)
+			return false, "", fmt.Errorf("Unknown status: [%s]", state)
 		}
-	}
+	})
+
+	return last, err
 }
 
 func displayClusters(c *CmdConfig, short bool, clusters ...do.KubernetesCluster) error {
@@ -2449,7 +3021,7 @@ func getVersionOrLatest(c *CmdConfig) (string, error) {
 	}
 	versions, err := c.Kubernetes().GetVersions()
 	if err != nil {
-		return "", fmt.Errorf("No version flag provided. Unable to lookup the latest version from the API: %v", err)
+		return "", fmt.Errorf("No version flag provided. Unable to lookup the latest version from the API: %w", err)
 	}
 	if len(versions) > 0 {
 		return versions[0].Slug, nil
@@ -2600,6 +3172,40 @@ func parseTaint(rawTaint string) (godo.Taint, error) {
 		Value:  value,
 		Effect: effect,
 	}, nil
+}
+
+func ssoConfigFromArgs(c *CmdConfig) (*godo.KubernetesClusterSSO, error) {
+	if !c.Doit.IsSet(doctl.ArgKubernetesEnableSSO) &&
+		!c.Doit.IsSet(doctl.ArgKubernetesRequireSSO) &&
+		!c.Doit.IsSet(doctl.ArgKubernetesSSOIssuerURL) &&
+		!c.Doit.IsSet(doctl.ArgKubernetesSSOClientID) {
+		return nil, nil
+	}
+	enableSSO, err := c.Doit.GetBool(c.NS, doctl.ArgKubernetesEnableSSO)
+	if err != nil {
+		return nil, fmt.Errorf("getting %s flag value: %w", doctl.ArgKubernetesEnableSSO, err)
+	}
+	requireSSO, err := c.Doit.GetBool(c.NS, doctl.ArgKubernetesRequireSSO)
+	if err != nil {
+		return nil, fmt.Errorf("getting %s flag value: %w", doctl.ArgKubernetesRequireSSO, err)
+	}
+
+	issuerURL, err := c.Doit.GetString(c.NS, doctl.ArgKubernetesSSOIssuerURL)
+	if err != nil {
+		return nil, fmt.Errorf("getting %s flag value: %w", doctl.ArgKubernetesSSOIssuerURL, err)
+	}
+	clientID, err := c.Doit.GetString(c.NS, doctl.ArgKubernetesSSOClientID)
+	if err != nil {
+		return nil, fmt.Errorf("getting %s flag value: %w", doctl.ArgKubernetesSSOClientID, err)
+	}
+
+	cfg := &godo.KubernetesClusterSSO{
+		Enabled:   enableSSO,
+		Required:  requireSSO,
+		IssuerURL: issuerURL,
+		ClientID:  clientID,
+	}
+	return cfg, nil
 }
 
 func boolPtr(val bool) *bool {

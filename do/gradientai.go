@@ -1,0 +1,484 @@
+/*
+Copyright 2018 The Doctl Authors All rights reserved.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+	http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package do
+
+import (
+	"context"
+
+	"github.com/digitalocean/godo"
+)
+
+// Agent wraps a godo.Agent.
+type Agent struct {
+	*godo.Agent
+}
+
+type KnowledgeBase struct {
+	*godo.KnowledgeBase
+}
+
+type KnowledgeBaseDataSource struct {
+	*godo.KnowledgeBaseDataSource
+}
+
+type OpenAiApiKey struct {
+	*godo.OpenAiApiKey
+}
+
+// OpenAiApiKeys is a slice of OpenAiApiKey.
+type OpenAiApiKeys []OpenAiApiKey
+
+// Agents is a slice of Agent.
+type Agents []Agent
+
+// DatacenterRegion represents a datacenter region for Gradient AI services.
+type DatacenterRegion struct {
+	*godo.DatacenterRegions
+}
+
+// DatacenterRegions is a slice of DatacenterRegion.
+type DatacenterRegions []DatacenterRegion
+
+// Model represents an available model for Gradient AI services.
+type Model struct {
+	*godo.Model
+}
+
+// Models is a slice of Model.
+type Models []Model
+
+// KnowledgeBases for Agents
+type KnowledgeBases []KnowledgeBase
+
+// KnowledgeBase DataSources for Agents
+type KnowledgeBaseDataSources []KnowledgeBaseDataSource
+
+// IndexingJob represents a job for indexing knowledge base content.
+type IndexingJob struct {
+	*godo.LastIndexingJob
+}
+
+// IndexingJobs is a slice of IndexingJob
+type IndexingJobs []IndexingJob
+
+// IndexingJobDataSource represents an indexed data source within an indexing job
+type IndexingJobDataSource struct {
+	*godo.IndexedDataSource
+}
+
+// IndexingJobDataSources is a slice of IndexingJobDataSource
+type IndexingJobDataSources []IndexingJobDataSource
+
+// AgentPlatformService is an interface for interacting with DigitalOcean's Agent Platform API.
+type AgentPlatformService interface {
+	ListKnowledgeBases() (KnowledgeBases, error)
+	GetKnowledgeBase(knowledgeBaseID string) (*KnowledgeBase, error)
+	CreateKnowledgeBase(req *godo.KnowledgeBaseCreateRequest) (*KnowledgeBase, error)
+	UpdateKnowledgeBase(knowledgeBaseID string, req *godo.UpdateKnowledgeBaseRequest) (*KnowledgeBase, error)
+	DeleteKnowledgeBase(knowledgeBaseID string) error
+	AddKnowledgeBaseDataSource(knowledgeBaseID string, req *godo.AddKnowledgeBaseDataSourceRequest) (*KnowledgeBaseDataSource, error)
+	ListKnowledgeBaseDataSources(knowledgeBaseID string) (KnowledgeBaseDataSources, error)
+	DeleteKnowledgeBaseDataSource(knowledgeBaseID string, dataSourceID string) error
+	AttachKnowledgeBaseToAgent(agentId string, knowledgeBaseID string) (*Agent, error)
+	DetachKnowledgeBaseToAgent(agentId string, knowledgeBaseID string) (*Agent, error)
+	ListOpenAIAPIKeys() (OpenAiApiKeys, error)
+	CreateOpenAIAPIKey(openaiAPIKeyCreate *godo.OpenAIAPIKeyCreateRequest) (*OpenAiApiKey, error)
+	GetOpenAIAPIKey(openaiApiKeyId string) (*OpenAiApiKey, error)
+	UpdateOpenAIAPIKey(openaiApiKeyId string, openaiAPIKeyUpdate *godo.OpenAIAPIKeyUpdateRequest) (*OpenAiApiKey, error)
+	DeleteOpenAIAPIKey(openaiApiKeyId string) (*OpenAiApiKey, error)
+	ListAgentsByOpenAIAPIKey(openaiApiKeyId string) (Agents, error)
+	ListDatacenterRegions(servesInference, servesBatch *bool) (DatacenterRegions, error)
+	ListAvailableModels() (Models, error)
+	ListIndexingJobs() (IndexingJobs, error)
+	GetIndexingJob(indexingJobID string) (*IndexingJob, error)
+	CancelIndexingJob(indexingJobID string) (*IndexingJob, error)
+	ListIndexingJobDataSources(indexingJobID string) (IndexingJobDataSources, error)
+	CreateScenarioSetUploadPresignedURLs(req *godo.CreateScenarioSetUploadPresignedURLsRequest) (*ScenarioSetFileUploads, error)
+	CreateScenarioSet(req *godo.CreateScenarioSetRequest) (*ScenarioSet, error)
+	GenerateScenarioSet(req *godo.GenerateScenarioSetRequest) (*ScenarioSet, error)
+	ListScenarioSets(opt *godo.ScenarioSetListOptions) (ScenarioSets, error)
+	GetScenarioSet(scenarioSetUUID string) (*ScenarioSet, error)
+	ListScenarios(scenarioSetUUID string, opt *godo.ScenarioListOptions) (Scenarios, error)
+	GetScenarioSetDownloadURL(scenarioSetUUID string) (*GenAIDownloadURL, error)
+	UpdateScenarioSet(scenarioSetUUID string, req *godo.UpdateScenarioSetRequest) (*ScenarioSet, error)
+	DeleteScenarioSet(scenarioSetUUID string) error
+	ListScenarioLibrary(opt *godo.ScenarioLibraryListOptions) (ScenarioLibraryEntries, error)
+	ListScenarioLibraryScenarios(libraryScenarioUUID string, opt *godo.ScenarioListOptions) (Scenarios, error)
+	CreateScenarioSetFromLibrary(libraryScenarioUUID string, req *godo.CreateScenarioSetFromLibraryRequest) (*ScenarioSet, error)
+	CreateSimulationRun(req *godo.CreateSimulationRunRequest) (*SimulationRun, error)
+	ListSimulationRuns(opt *godo.SimulationRunListOptions) (SimulationRuns, error)
+	GetSimulationRun(runUUID string) (*SimulationRunDetail, error)
+	UpdateSimulationRun(runUUID string, req *godo.UpdateSimulationRunRequest) (*SimulationRun, error)
+	CancelSimulationRun(runUUID string) (*SimulationRun, error)
+	DeleteSimulationRun(runUUID string) error
+	ListSimulationEpisodes(runUUID string, opt *godo.SimulationEpisodeListOptions) (SimulationEpisodes, error)
+	GetSimulationEpisode(runUUID string, episodeUUID string) (*SimulationEpisode, error)
+	GetSimulationEpisodeTrajectory(runUUID string, episodeUUID string) (*SimulationTrajectory, error)
+	GetSimulationEpisodeTrajectoryURL(runUUID string, episodeUUID string) (*GenAIDownloadURL, error)
+	CreateModelEvalDatasetUploadPresignedURLs(req *godo.CreateModelEvalDatasetUploadPresignedURLsRequest) (*ModelEvalDatasetFileUploads, error)
+	CreateEvaluationDataset(req *godo.CreateEvaluationDatasetRequest) (*EvaluationDatasetCreate, error)
+	ListEvaluationDatasets(opt *godo.EvaluationDatasetListOptions) (EvaluationDatasets, error)
+	DeleteEvaluationDataset(datasetUUID string) error
+	CreateModelEvaluationRun(req *godo.CreateModelEvaluationRunRequest) (*ModelEvaluationRunCreate, error)
+	ListModelEvaluationRuns(opt *godo.ModelEvaluationRunListOptions) (ModelEvaluationRuns, error)
+	GetModelEvaluationRun(evalRunUUID string) (*ModelEvaluationRunDetail, error)
+	UpdateModelEvaluationRun(evalRunUUID string, req *godo.UpdateModelEvaluationRunRequest) (*ModelEvaluationRun, error)
+	CancelModelEvaluationRun(evalRunUUID string) (*ModelEvaluationRun, error)
+	DeleteModelEvaluationRun(evalRunUUID string) error
+	GetModelEvaluationRunResultsDownloadURL(evalRunUUID string) (*GenAIDownloadURL, error)
+	ListModelEvaluationPresets() (ModelEvaluationPresets, error)
+	GetModelEvaluationPreset(evalPresetUUID string) (*ModelEvaluationPreset, error)
+	DeleteModelEvaluationPreset(evalPresetUUID string) error
+	ListModelEvaluationMetrics(opt *godo.ModelEvaluationMetricListOptions) (EvaluationMetrics, error)
+	CreateCustomEvaluationMetric(req *godo.CreateCustomEvaluationMetricRequest) (*EvaluationMetric, error)
+	UpdateCustomEvaluationMetric(metricUUID string, req *godo.UpdateCustomEvaluationMetricRequest) (*EvaluationMetric, error)
+	DeleteCustomEvaluationMetric(metricUUID string) error
+}
+
+var _ AgentPlatformService = &agentPlatformService{}
+
+type agentPlatformService struct {
+	client *godo.Client
+}
+
+// NewAgentPlatformService builds an instance of AgentPlatformService.
+func NewAgentPlatformService(client *godo.Client) AgentPlatformService {
+	return &agentPlatformService{
+		client: client,
+	}
+}
+
+// ListKnowledgeBases lists all knowledge bases for an agent.
+func (a *agentPlatformService) ListKnowledgeBases() (KnowledgeBases, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		list, resp, err := a.client.AgentPlatform.ListKnowledgeBases(context.TODO(), opt)
+		if err != nil {
+			return nil, nil, err
+		}
+		si := make([]any, len(list))
+		for i := range list {
+			si[i] = &list[i]
+		}
+		return si, resp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]KnowledgeBase, len(si))
+	for i := range si {
+		kb := si[i].(*godo.KnowledgeBase)
+		list[i] = KnowledgeBase{KnowledgeBase: kb}
+	}
+
+	return list, nil
+}
+
+func (a *agentPlatformService) GetKnowledgeBase(knowledgeBaseID string) (*KnowledgeBase, error) {
+	kb, _, _, err := a.client.AgentPlatform.GetKnowledgeBase(context.TODO(), knowledgeBaseID)
+	if err != nil {
+		return nil, err
+	}
+	return &KnowledgeBase{KnowledgeBase: kb}, nil
+}
+
+func (a *agentPlatformService) ListKnowledgeBaseDataSources(knowledgeBaseID string) (KnowledgeBaseDataSources, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		list, resp, err := a.client.AgentPlatform.ListKnowledgeBaseDataSources(context.TODO(), knowledgeBaseID, opt)
+		if err != nil {
+			return nil, nil, err
+		}
+		si := make([]any, len(list))
+		for i := range list {
+			si[i] = &list[i]
+		}
+		return si, resp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]KnowledgeBaseDataSource, len(si))
+	for i := range si {
+		kb := si[i].(*godo.KnowledgeBaseDataSource)
+		list[i] = KnowledgeBaseDataSource{KnowledgeBaseDataSource: kb}
+	}
+
+	return list, nil
+}
+
+func (a *agentPlatformService) CreateKnowledgeBase(req *godo.KnowledgeBaseCreateRequest) (*KnowledgeBase, error) {
+	kb, _, err := a.client.AgentPlatform.CreateKnowledgeBase(context.TODO(), req)
+	if err != nil {
+		return nil, err
+	}
+	return &KnowledgeBase{KnowledgeBase: kb}, nil
+}
+
+func (a *agentPlatformService) UpdateKnowledgeBase(knowledgeBaseID string, req *godo.UpdateKnowledgeBaseRequest) (*KnowledgeBase, error) {
+	kb, _, err := a.client.AgentPlatform.UpdateKnowledgeBase(context.TODO(), knowledgeBaseID, req)
+	if err != nil {
+		return nil, err
+	}
+	return &KnowledgeBase{KnowledgeBase: kb}, nil
+}
+
+func (a *agentPlatformService) AddKnowledgeBaseDataSource(knowledgeBaseID string, req *godo.AddKnowledgeBaseDataSourceRequest) (*KnowledgeBaseDataSource, error) {
+	kb, _, err := a.client.AgentPlatform.AddKnowledgeBaseDataSource(context.TODO(), knowledgeBaseID, req)
+	if err != nil {
+		return nil, err
+	}
+	return &KnowledgeBaseDataSource{KnowledgeBaseDataSource: kb}, nil
+}
+
+func (a *agentPlatformService) DeleteKnowledgeBaseDataSource(knowledgeBaseID string, dataSourceID string) error {
+	_, _, _, err := a.client.AgentPlatform.DeleteKnowledgeBaseDataSource(context.TODO(), knowledgeBaseID, dataSourceID)
+	return err
+}
+
+func (a *agentPlatformService) DeleteKnowledgeBase(knowledgeBaseID string) error {
+	_, _, err := a.client.AgentPlatform.DeleteKnowledgeBase(context.TODO(), knowledgeBaseID)
+	return err
+}
+
+func (a *agentPlatformService) AttachKnowledgeBaseToAgent(agentId string, knowledgeBaseID string) (*Agent, error) {
+	agent, _, err := a.client.AgentPlatform.AttachKnowledgeBaseToAgent(context.TODO(), agentId, knowledgeBaseID)
+	if err != nil {
+		return &Agent{}, err
+	}
+	return &Agent{Agent: agent}, nil
+}
+
+func (a *agentPlatformService) DetachKnowledgeBaseToAgent(agentId string, knowledgeBaseID string) (*Agent, error) {
+	agent, _, err := a.client.AgentPlatform.DetachKnowledgeBaseToAgent(context.TODO(), agentId, knowledgeBaseID)
+	if err != nil {
+		return &Agent{}, err
+	}
+	return &Agent{Agent: agent}, nil
+}
+
+func (a *agentPlatformService) ListOpenAIAPIKeys() (OpenAiApiKeys, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		list, resp, err := a.client.AgentPlatform.ListOpenAIAPIKeys(context.TODO(), opt)
+		if err != nil {
+			return nil, nil, err
+		}
+		si := make([]any, len(list))
+		for i := range list {
+			si[i] = list[i]
+		}
+		return si, resp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]OpenAiApiKey, len(si))
+	for i := range si {
+		ok := si[i].(*godo.OpenAiApiKey)
+		list[i] = OpenAiApiKey{OpenAiApiKey: ok}
+	}
+
+	return list, nil
+}
+
+func (a *agentPlatformService) CreateOpenAIAPIKey(openaiAPIKeyCreate *godo.OpenAIAPIKeyCreateRequest) (*OpenAiApiKey, error) {
+	openaiApiKey, _, err := a.client.AgentPlatform.CreateOpenAIAPIKey(context.TODO(), openaiAPIKeyCreate)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenAiApiKey{OpenAiApiKey: openaiApiKey}, nil
+}
+
+func (a *agentPlatformService) GetOpenAIAPIKey(openaiApiKeyId string) (*OpenAiApiKey, error) {
+	openaiApiKey, _, err := a.client.AgentPlatform.GetOpenAIAPIKey(context.TODO(), openaiApiKeyId)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenAiApiKey{OpenAiApiKey: openaiApiKey}, nil
+}
+
+func (a *agentPlatformService) UpdateOpenAIAPIKey(openaiApiKeyId string, openaiAPIKeyUpdate *godo.OpenAIAPIKeyUpdateRequest) (*OpenAiApiKey, error) {
+	openaiApiKey, _, err := a.client.AgentPlatform.UpdateOpenAIAPIKey(context.TODO(), openaiApiKeyId, openaiAPIKeyUpdate)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenAiApiKey{OpenAiApiKey: openaiApiKey}, nil
+}
+
+func (a *agentPlatformService) DeleteOpenAIAPIKey(openaiApiKeyId string) (*OpenAiApiKey, error) {
+	openaiApiKey, _, err := a.client.AgentPlatform.DeleteOpenAIAPIKey(context.TODO(), openaiApiKeyId)
+	if err != nil {
+		return nil, err
+	}
+	return &OpenAiApiKey{OpenAiApiKey: openaiApiKey}, nil
+}
+
+func (a *agentPlatformService) ListAgentsByOpenAIAPIKey(openaiApiKeyId string) (Agents, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		agents, resp, err := a.client.AgentPlatform.ListAgentsByOpenAIAPIKey(context.TODO(), openaiApiKeyId, opt)
+		if err != nil {
+			return nil, nil, err
+		}
+		list := make([]any, len(agents))
+		for i := range agents {
+			list[i] = agents[i]
+		}
+		return list, resp, nil
+	}
+
+	// Checking if there are no API keys we don't need to paginate
+	opt := &godo.ListOptions{Page: 1, PerPage: perPage}
+	res, _, err := f(opt)
+	if err != nil {
+		return nil, err
+	}
+	if len(res) == 0 {
+		return Agents{}, nil
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]Agent, len(si))
+	for i := range si {
+		a := si[i].(*godo.Agent)
+		list[i] = Agent{Agent: a}
+	}
+
+	return list, nil
+}
+
+func (a *agentPlatformService) ListDatacenterRegions(servesInference, servesBatch *bool) (DatacenterRegions, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		list, resp, err := a.client.AgentPlatform.ListDatacenterRegions(context.TODO(), servesInference, servesBatch)
+		if err != nil {
+			return nil, nil, err
+		}
+		si := make([]any, len(list))
+		for i := range list {
+			si[i] = list[i]
+		}
+		return si, resp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]DatacenterRegion, len(si))
+	for i := range si {
+		dc := si[i].(*godo.DatacenterRegions)
+		list[i] = DatacenterRegion{DatacenterRegions: dc}
+	}
+
+	return list, nil
+}
+
+func (a *agentPlatformService) ListAvailableModels() (Models, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		list, resp, err := a.client.AgentPlatform.ListAvailableModels(context.TODO(), opt)
+		if err != nil {
+			return nil, nil, err
+		}
+		si := make([]any, len(list))
+		for i := range list {
+			si[i] = list[i]
+		}
+		return si, resp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]Model, len(si))
+	for i := range si {
+		m := si[i].(*godo.Model)
+		list[i] = Model{Model: m}
+	}
+
+	return list, nil
+}
+
+// ListIndexingJobs lists all indexing jobs for knowledge bases.
+func (a *agentPlatformService) ListIndexingJobs() (IndexingJobs, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		resp, godoResp, err := a.client.AgentPlatform.ListIndexingJobs(context.TODO(), opt)
+		if err != nil {
+			return nil, nil, err
+		}
+		si := make([]any, len(resp.Jobs))
+		for i := range resp.Jobs {
+			si[i] = &resp.Jobs[i]
+		}
+		return si, godoResp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]IndexingJob, len(si))
+	for i := range si {
+		job := si[i].(*godo.LastIndexingJob)
+		list[i] = IndexingJob{LastIndexingJob: job}
+	}
+
+	return list, nil
+}
+
+// GetIndexingJob retrieves the status of a specific indexing job.
+func (a *agentPlatformService) GetIndexingJob(indexingJobID string) (*IndexingJob, error) {
+	resp, _, err := a.client.AgentPlatform.GetIndexingJob(context.TODO(), indexingJobID)
+	if err != nil {
+		return nil, err
+	}
+	return &IndexingJob{LastIndexingJob: &resp.Job}, nil
+}
+
+// CancelIndexingJob cancels a specific indexing job.
+func (a *agentPlatformService) CancelIndexingJob(indexingJobID string) (*IndexingJob, error) {
+	resp, _, err := a.client.AgentPlatform.CancelIndexingJob(context.TODO(), indexingJobID)
+	if err != nil {
+		return nil, err
+	}
+	return &IndexingJob{LastIndexingJob: &resp.Job}, nil
+}
+
+// ListIndexingJobDataSources lists all data sources for a specific indexing job.
+func (a *agentPlatformService) ListIndexingJobDataSources(indexingJobID string) (IndexingJobDataSources, error) {
+	resp, _, err := a.client.AgentPlatform.ListIndexingJobDataSources(context.TODO(), indexingJobID)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make([]IndexingJobDataSource, len(resp.IndexedDataSources))
+	for i := range resp.IndexedDataSources {
+		list[i] = IndexingJobDataSource{IndexedDataSource: &resp.IndexedDataSources[i]}
+	}
+
+	return list, nil
+}

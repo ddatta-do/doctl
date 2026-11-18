@@ -94,17 +94,23 @@ func RunSnapshotList(c *CmdConfig) error {
 	var matchedList []do.Snapshot
 	var list []do.Snapshot
 
-	if restype == "droplet" {
+	switch restype {
+	case "droplet":
 		list, err = ss.ListDroplet()
 		if err != nil {
 			return err
 		}
-	} else if restype == "volume" {
-		list, err = ss.ListVolume()
+	case "volume":
+		if region != "" {
+			list, err = ss.ListVolumeSnapshotByRegion(region)
+		} else {
+			list, err = ss.ListVolume()
+		}
 		if err != nil {
 			return err
 		}
-	} else {
+
+	default:
 		list, err = ss.List()
 		if err != nil {
 			return err
@@ -183,15 +189,15 @@ func RunSnapshotDelete(c *CmdConfig) error {
 	ss := c.Snapshots()
 	ids := c.Args
 
-	if force || AskForConfirmDelete("snapshot", len(ids)) == nil {
-		for _, id := range ids {
-			err := ss.Delete(id)
-			if err != nil {
-				return err
-			}
+	if err := confirmDelete(force, "snapshot", len(ids)); err != nil {
+		return err
+	}
+
+	for _, id := range ids {
+		err := ss.Delete(id)
+		if err != nil {
+			return err
 		}
-	} else {
-		return errOperationAborted
 	}
 	return nil
 }

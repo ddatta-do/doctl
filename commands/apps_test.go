@@ -11,16 +11,20 @@ import (
 
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/pkg/listen"
+	"github.com/digitalocean/doctl/pkg/terminal"
 	"github.com/digitalocean/godo"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 )
 
 func TestAppsCommand(t *testing.T) {
 	cmd := Apps()
 	require.NotNil(t, cmd)
 	assertCommandNames(t, cmd,
+		"console",
+		"list-instances",
 		"create",
 		"get",
 		"list",
@@ -29,16 +33,23 @@ func TestAppsCommand(t *testing.T) {
 		"dev",
 		"create-deployment",
 		"get-deployment",
+		"get-job-invocation",
 		"list-deployments",
+		"list-job-invocations",
+		"cancel-job-invocation",
 		"list-regions",
 		"logs",
 		"propose",
+		"restart",
 		"spec",
 		"tier",
 		"list-alerts",
 		"update-alert-destinations",
 		"list-buildpacks",
 		"upgrade-buildpack",
+		"cancel-event",
+		"get-event",
+		"list-events",
 	)
 }
 
@@ -341,6 +352,110 @@ func TestRunAppsCreateDeploymentWithWait(t *testing.T) {
 	})
 }
 
+func TestRunAppsRestart(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		appID := uuid.New().String()
+		deployment := &godo.Deployment{
+			ID:   uuid.New().String(),
+			Spec: &testAppSpec,
+			Services: []*godo.DeploymentService{{
+				Name:             "service",
+				SourceCommitHash: "commit",
+			}},
+			Cause: "Manual",
+			Phase: godo.DeploymentPhase_PendingDeploy,
+			Progress: &godo.DeploymentProgress{
+				PendingSteps: 1,
+				RunningSteps: 0,
+				SuccessSteps: 0,
+				ErrorSteps:   0,
+				TotalSteps:   1,
+
+				Steps: []*godo.DeploymentProgressStep{{
+					Name:      "name",
+					Status:    "pending",
+					StartedAt: time.Now(),
+				}},
+			},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		tm.apps.EXPECT().Restart(appID, []string{"component1", "component2"}).Times(1).Return(deployment, nil)
+
+		config.Args = append(config.Args, appID)
+		config.Doit.Set(config.NS, doctl.ArgAppComponents, []string{"component1", "component2"})
+
+		err := RunAppsRestart(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunAppsRestartWithWait(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		appID := uuid.New().String()
+		deployment := &godo.Deployment{
+			ID:   uuid.New().String(),
+			Spec: &testAppSpec,
+			Services: []*godo.DeploymentService{{
+				Name:             "service",
+				SourceCommitHash: "commit",
+			}},
+			Cause: "Manual",
+			Phase: godo.DeploymentPhase_PendingDeploy,
+			Progress: &godo.DeploymentProgress{
+				PendingSteps: 1,
+				RunningSteps: 0,
+				SuccessSteps: 0,
+				ErrorSteps:   0,
+				TotalSteps:   1,
+
+				Steps: []*godo.DeploymentProgressStep{{
+					Name:      "name",
+					Status:    "pending",
+					StartedAt: time.Now(),
+				}},
+			},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+		activeDeployment := &godo.Deployment{
+			ID:   uuid.New().String(),
+			Spec: &testAppSpec,
+			Services: []*godo.DeploymentService{{
+				Name:             "service",
+				SourceCommitHash: "commit",
+			}},
+			Cause: "Manual",
+			Phase: godo.DeploymentPhase_Active,
+			Progress: &godo.DeploymentProgress{
+				PendingSteps: 1,
+				RunningSteps: 0,
+				SuccessSteps: 1,
+				ErrorSteps:   0,
+				TotalSteps:   1,
+
+				Steps: []*godo.DeploymentProgressStep{{
+					Name:      "name",
+					Status:    "pending",
+					StartedAt: time.Now(),
+				}},
+			},
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		tm.apps.EXPECT().Restart(appID, nil).Times(1).Return(deployment, nil)
+		tm.apps.EXPECT().GetDeployment(appID, deployment.ID).Times(2).Return(activeDeployment, nil)
+
+		config.Args = append(config.Args, appID)
+		config.Doit.Set(config.NS, doctl.ArgCommandWait, true)
+
+		err := RunAppsRestart(config)
+		require.NoError(t, err)
+	})
+}
+
 func TestRunAppsGetDeployment(t *testing.T) {
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		appID := uuid.New().String()
@@ -431,10 +546,10 @@ func TestRunAppsGetLogs(t *testing.T) {
 	for typeStr, logType := range types {
 		withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 			tm.apps.EXPECT().GetLogs(appID, deploymentID, component, logType, true, 1).Times(1).Return(&godo.AppLogs{LiveURL: "https://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33"}, nil)
-			tm.listen.EXPECT().Start().Times(1).Return(nil)
+			tm.listen.EXPECT().Listen(gomock.Any()).Times(1).Return(nil)
 
 			tc := config.Doit.(*doctl.TestConfig)
-			tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer) listen.ListenerService {
+			tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer, in <-chan []byte) listen.ListenerService {
 				assert.Equal(t, "aa-bb-11-cc-33", token)
 				assert.Equal(t, "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33", url.String())
 				return tm.listen
@@ -450,6 +565,154 @@ func TestRunAppsGetLogs(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+func TestRunAppsGetLogsWithAppName(t *testing.T) {
+	appName := "test-app"
+	component := "service"
+
+	testApp := &godo.App{
+		ID:   uuid.New().String(),
+		Spec: &testAppSpec,
+		ActiveDeployment: &godo.Deployment{
+			ID:   uuid.New().String(),
+			Spec: &testAppSpec,
+		},
+	}
+
+	types := map[string]godo.AppLogType{
+		"build":  godo.AppLogTypeBuild,
+		"deploy": godo.AppLogTypeDeploy,
+		"run":    godo.AppLogTypeRun,
+	}
+
+	for typeStr, logType := range types {
+		withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+			tm.apps.EXPECT().Find(appName).Times(1).Return(testApp, nil)
+			tm.apps.EXPECT().GetLogs(testApp.ID, testApp.ActiveDeployment.ID, component, logType, true, 1).Times(1).Return(&godo.AppLogs{LiveURL: "https://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33"}, nil)
+			tm.listen.EXPECT().Listen(gomock.Any()).Times(1).Return(nil)
+
+			tc := config.Doit.(*doctl.TestConfig)
+			tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer, in <-chan []byte) listen.ListenerService {
+				assert.Equal(t, "aa-bb-11-cc-33", token)
+				assert.Equal(t, "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33", url.String())
+				return tm.listen
+			}
+
+			config.Args = append(config.Args, appName, component)
+			config.Doit.Set(config.NS, doctl.ArgAppDeployment, "")
+			config.Doit.Set(config.NS, doctl.ArgAppLogType, typeStr)
+			config.Doit.Set(config.NS, doctl.ArgAppLogFollow, true)
+			config.Doit.Set(config.NS, doctl.ArgAppLogTail, 1)
+
+			err := RunAppsGetLogs(config)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestRunAppsGetLogsWithAppNameAndDeploymentID(t *testing.T) {
+	appName := "test-app"
+	component := "service"
+
+	testApp := &godo.App{
+		ID:   uuid.New().String(),
+		Spec: &testAppSpec,
+		ActiveDeployment: &godo.Deployment{
+			ID:   uuid.New().String(),
+			Spec: &testAppSpec,
+		},
+	}
+
+	types := map[string]godo.AppLogType{
+		"build":  godo.AppLogTypeBuild,
+		"deploy": godo.AppLogTypeDeploy,
+		"run":    godo.AppLogTypeRun,
+	}
+
+	for typeStr, logType := range types {
+		withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+			tm.apps.EXPECT().Find(appName).Times(1).Return(testApp, nil)
+			tm.apps.EXPECT().GetLogs(testApp.ID, testApp.ActiveDeployment.ID, component, logType, true, 1).Times(1).Return(&godo.AppLogs{LiveURL: "https://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33"}, nil)
+			tm.listen.EXPECT().Listen(gomock.Any()).Times(1).Return(nil)
+
+			tc := config.Doit.(*doctl.TestConfig)
+			tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer, in <-chan []byte) listen.ListenerService {
+				assert.Equal(t, "aa-bb-11-cc-33", token)
+				assert.Equal(t, "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33", url.String())
+				return tm.listen
+			}
+
+			config.Args = append(config.Args, appName, component)
+			config.Doit.Set(config.NS, doctl.ArgAppDeployment, testApp.ActiveDeployment.ID)
+			config.Doit.Set(config.NS, doctl.ArgAppLogType, typeStr)
+			config.Doit.Set(config.NS, doctl.ArgAppLogFollow, true)
+			config.Doit.Set(config.NS, doctl.ArgAppLogTail, 1)
+
+			err := RunAppsGetLogs(config)
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestRunAppsConsole(t *testing.T) {
+	appID := uuid.New().String()
+	deploymentID := uuid.New().String()
+	componentName := "service"
+	instanceName := "app-instance-1d34fg678-45f6"
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		opts := &godo.AppGetExecOptions{
+			DeploymentID: deploymentID,
+		}
+		tm.apps.EXPECT().GetExecWithOpts(appID, componentName, opts).Times(1).Return(&godo.AppExec{URL: "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33"}, nil)
+		tm.listen.EXPECT().Listen(gomock.Any()).Times(1).Return(nil)
+		tm.terminal.EXPECT().ReadRawStdin(gomock.Any(), gomock.Any()).Times(1).Return(func() {}, nil)
+		tm.terminal.EXPECT().MonitorResizeEvents(gomock.Any(), gomock.Any()).Times(1).Return(nil)
+
+		tc := config.Doit.(*doctl.TestConfig)
+		tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer, in <-chan []byte) listen.ListenerService {
+			assert.Equal(t, "aa-bb-11-cc-33", token)
+			assert.Equal(t, "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33", url.String())
+			return tm.listen
+		}
+		tc.TerminalFn = func() terminal.Terminal {
+			return tm.terminal
+		}
+
+		config.Args = append(config.Args, appID, componentName)
+		config.Doit.Set(config.NS, doctl.ArgAppDeployment, deploymentID)
+
+		err := RunAppsConsole(config)
+		require.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		opts := &godo.AppGetExecOptions{
+			DeploymentID: deploymentID,
+			InstanceName: instanceName,
+		}
+		tm.apps.EXPECT().GetExecWithOpts(appID, componentName, opts).Times(1).Return(&godo.AppExec{URL: "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33"}, nil)
+		tm.listen.EXPECT().Listen(gomock.Any()).Times(1).Return(nil)
+		tm.terminal.EXPECT().ReadRawStdin(gomock.Any(), gomock.Any()).Times(1).Return(func() {}, nil)
+		tm.terminal.EXPECT().MonitorResizeEvents(gomock.Any(), gomock.Any()).Times(1).Return(nil)
+
+		tc := config.Doit.(*doctl.TestConfig)
+		tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer, in <-chan []byte) listen.ListenerService {
+			assert.Equal(t, "aa-bb-11-cc-33", token)
+			assert.Equal(t, "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33", url.String())
+			return tm.listen
+		}
+		tc.TerminalFn = func() terminal.Terminal {
+			return tm.terminal
+		}
+
+		config.Args = append(config.Args, appID, componentName, instanceName)
+		config.Doit.Set(config.NS, doctl.ArgAppDeployment, deploymentID)
+
+		err := RunAppsConsole(config)
+		require.NoError(t, err)
+	})
 }
 
 const (
@@ -692,6 +955,289 @@ services:
 	})
 }
 
+func TestRunAppSpecGet_AuthoritySerialization(t *testing.T) {
+	exactEmpty := ""
+	exactDomain := "example.com"
+	pathPrefixSlash := "/"
+	pathPrefixEmpty := ""
+
+	tests := []struct {
+		name       string
+		exact      *string
+		pathPrefix *string // nil means use "/"
+		wantJSON   string
+		wantYAML   string
+	}{
+		{
+			name:       "authority with empty exact string",
+			exact:      &exactEmpty,
+			pathPrefix: nil,
+			wantJSON: `{
+  "name": "test",
+  "services": [
+    {
+      "name": "service",
+      "github": {
+        "repo": "digitalocean/doctl",
+        "branch": "main"
+      }
+    }
+  ],
+  "ingress": {
+    "rules": [
+      {
+        "match": {
+          "path": {
+            "prefix": "/"
+          },
+          "authority": {
+            "exact": ""
+          }
+        },
+        "component": {
+          "name": "service"
+        }
+      }
+    ]
+  }
+}
+`,
+			wantYAML: `ingress:
+  rules:
+  - component:
+      name: service
+    match:
+      authority:
+        exact: ""
+      path:
+        prefix: /
+name: test
+services:
+- github:
+    branch: main
+    repo: digitalocean/doctl
+  name: service
+`,
+		},
+		{
+			name:       "authority with non-empty exact string",
+			exact:      &exactDomain,
+			pathPrefix: nil,
+			wantJSON: `{
+  "name": "test",
+  "services": [
+    {
+      "name": "service",
+      "github": {
+        "repo": "digitalocean/doctl",
+        "branch": "main"
+      }
+    }
+  ],
+  "ingress": {
+    "rules": [
+      {
+        "match": {
+          "path": {
+            "prefix": "/"
+          },
+          "authority": {
+            "exact": "example.com"
+          }
+        },
+        "component": {
+          "name": "service"
+        }
+      }
+    ]
+  }
+}
+`,
+			wantYAML: `ingress:
+  rules:
+  - component:
+      name: service
+    match:
+      authority:
+        exact: example.com
+      path:
+        prefix: /
+name: test
+services:
+- github:
+    branch: main
+    repo: digitalocean/doctl
+  name: service
+`,
+		},
+		{
+			name:       "no authority set",
+			exact:      nil,
+			pathPrefix: nil,
+			wantJSON: `{
+  "name": "test",
+  "services": [
+    {
+      "name": "service",
+      "github": {
+        "repo": "digitalocean/doctl",
+        "branch": "main"
+      }
+    }
+  ],
+  "ingress": {
+    "rules": [
+      {
+        "match": {
+          "path": {
+            "prefix": "/"
+          }
+        },
+        "component": {
+          "name": "service"
+        }
+      }
+    ]
+  }
+}
+`,
+			wantYAML: `ingress:
+  rules:
+  - component:
+      name: service
+    match:
+      path:
+        prefix: /
+name: test
+services:
+- github:
+    branch: main
+    repo: digitalocean/doctl
+  name: service
+`,
+		},
+		{
+			name:       "authority with empty exact string and empty path prefix",
+			exact:      &exactEmpty,
+			pathPrefix: &pathPrefixEmpty,
+			wantJSON: `{
+  "name": "test",
+  "services": [
+    {
+      "name": "service",
+      "github": {
+        "repo": "digitalocean/doctl",
+        "branch": "main"
+      }
+    }
+  ],
+  "ingress": {
+    "rules": [
+      {
+        "match": {
+          "path": {
+            "prefix": ""
+          },
+          "authority": {
+            "exact": ""
+          }
+        },
+        "component": {
+          "name": "service"
+        }
+      }
+    ]
+  }
+}
+`,
+			wantYAML: `ingress:
+  rules:
+  - component:
+      name: service
+    match:
+      authority:
+        exact: ""
+      path:
+        prefix: ""
+name: test
+services:
+- github:
+    branch: main
+    repo: digitalocean/doctl
+  name: service
+`,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+				var authority *godo.AppIngressSpecRuleStringMatch
+				if tc.exact != nil {
+					authority = &godo.AppIngressSpecRuleStringMatch{Exact: tc.exact}
+				}
+
+				pathForMatch := &pathPrefixSlash
+				if tc.pathPrefix != nil {
+					pathForMatch = tc.pathPrefix
+				}
+
+				spec := &godo.AppSpec{
+					Name: "test",
+					Services: []*godo.AppServiceSpec{
+						{
+							Name: "service",
+							GitHub: &godo.GitHubSourceSpec{
+								Repo:   "digitalocean/doctl",
+								Branch: "main",
+							},
+						},
+					},
+					Ingress: &godo.AppIngressSpec{
+						Rules: []*godo.AppIngressSpecRule{
+							{
+								Match: &godo.AppIngressSpecRuleMatch{
+									Path:      &godo.AppIngressSpecRuleStringMatch{Prefix: pathForMatch},
+									Authority: authority,
+								},
+								Component: &godo.AppIngressSpecRuleRoutingComponent{Name: "service"},
+							},
+						},
+					},
+				}
+
+				app := &godo.App{
+					ID:   uuid.New().String(),
+					Spec: spec,
+				}
+
+				tm.apps.EXPECT().Get(app.ID).Times(2).Return(app, nil)
+
+				t.Run("json", func(t *testing.T) {
+					var buf bytes.Buffer
+					config.Doit.Set(config.NS, doctl.ArgFormat, "json")
+					config.Args = append(config.Args, app.ID)
+					config.Out = &buf
+
+					err := RunAppsSpecGet(config)
+					require.NoError(t, err)
+					require.Equal(t, tc.wantJSON, buf.String())
+				})
+
+				t.Run("yaml", func(t *testing.T) {
+					var buf bytes.Buffer
+					config.Doit.Set(config.NS, doctl.ArgFormat, "yaml")
+					config.Args = append(config.Args, app.ID)
+					config.Out = &buf
+
+					err := RunAppsSpecGet(config)
+					require.NoError(t, err)
+					require.Equal(t, tc.wantYAML, buf.String())
+				})
+			})
+		})
+	}
+}
 func TestRunAppsListRegions(t *testing.T) {
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		regions := []*godo.AppRegion{{
@@ -811,6 +1357,178 @@ func TestRunAppsUpgradeBuildpack(t *testing.T) {
 		config.Doit.Set(config.NS, doctl.ArgMajorVersion, 3)
 		config.Doit.Set(config.NS, doctl.ArgTriggerDeployment, true)
 		err := RunAppUpgradeBuildpack(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunAppsGetInstances(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		appID := uuid.New().String()
+
+		opts := &godo.GetAppInstancesOpts{}
+
+		tm.apps.EXPECT().GetAppInstances(appID, opts).Times(1).Return([]*godo.AppInstance{{
+			InstanceName:  "service-instance-1d34fg678-45f6",
+			ComponentType: "service",
+			ComponentName: "service-instance",
+		}}, nil)
+
+		config.Args = append(config.Args, appID)
+
+		err := RunGetAppInstances(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunAppsListJobInvocations(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		appID := uuid.New().String()
+		jobInvocations := []*godo.JobInvocation{{
+			ID:           uuid.New().String(),
+			JobName:      "job-name",
+			DeploymentID: uuid.New().String(),
+			Phase:        godo.JOBINVOCATIONPHASE_Succeeded,
+			Trigger: &godo.JobInvocationTrigger{
+				Type: godo.JOBINVOCATIONTRIGGERTYPE_Scheduled,
+				Scheduled: &godo.TriggerMetadataScheduled{
+					Schedule: &godo.AppJobSpecSchedule{
+						Cron:     "0 0 * * *",
+						TimeZone: "America/New_York",
+					},
+				},
+			},
+			CreatedAt:   time.Now(),
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}}
+
+		opts := &godo.ListJobInvocationsOptions{
+			DeploymentID: jobInvocations[0].DeploymentID,
+			JobNames:     []string{jobInvocations[0].JobName},
+		}
+
+		tm.apps.EXPECT().ListJobInvocations(appID, opts).Times(1).Return(jobInvocations, nil)
+
+		config.Args = append(config.Args, appID)
+		config.Doit.Set(config.NS, doctl.ArgAppDeployment, jobInvocations[0].DeploymentID)
+		config.Doit.Set(config.NS, doctl.ArgAppJobName, jobInvocations[0].JobName)
+
+		err := RunAppsListJobInvocations(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunAppsGetJobInvocation(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		appID := uuid.New().String()
+		jobInvocation := &godo.JobInvocation{
+			ID:           uuid.New().String(),
+			JobName:      "job-name",
+			DeploymentID: uuid.New().String(),
+			Phase:        godo.JOBINVOCATIONPHASE_Succeeded,
+			Trigger: &godo.JobInvocationTrigger{
+				Type: godo.JOBINVOCATIONTRIGGERTYPE_Scheduled,
+				Scheduled: &godo.TriggerMetadataScheduled{
+					Schedule: &godo.AppJobSpecSchedule{
+						Cron:     "0 0 * * *",
+						TimeZone: "America/New_York",
+					},
+				},
+			},
+			CreatedAt:   time.Now(),
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}
+
+		opts := &godo.GetJobInvocationOptions{
+			JobName: jobInvocation.JobName,
+		}
+
+		tm.apps.EXPECT().GetJobInvocation(appID, jobInvocation.ID, opts).Times(1).Return(jobInvocation, nil)
+
+		config.Args = append(config.Args, appID, jobInvocation.ID)
+		config.Doit.Set(config.NS, doctl.ArgAppJobName, jobInvocation.JobName)
+
+		err := RunAppsGetJobInvocation(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunAppsGetJobInvocationLogs(t *testing.T) {
+	appID := uuid.New().String()
+	jobInvocationID := uuid.New().String()
+	jobName := "good-job"
+
+	testApp := &godo.App{
+		ID:   appID,
+		Spec: &testAppSpec,
+		ActiveDeployment: &godo.Deployment{
+			ID:   uuid.New().String(),
+			Spec: &testAppSpec,
+		},
+	}
+
+	opts := &godo.GetJobInvocationLogsOptions{
+		JobName: jobName,
+		Follow:  true,
+	}
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		tm.apps.EXPECT().Find(appID).Times(1).Return(testApp, nil)
+		tm.apps.EXPECT().GetJobInvocationLogs(appID, jobInvocationID, opts).Times(1).Return(&godo.AppLogs{LiveURL: "https://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33"}, nil)
+		tm.listen.EXPECT().Listen(gomock.Any()).Times(1).Return(nil)
+
+		tc := config.Doit.(*doctl.TestConfig)
+		tc.ListenFn = func(url *url.URL, token string, schemaFunc listen.SchemaFunc, out io.Writer, in <-chan []byte) listen.ListenerService {
+			assert.Equal(t, "aa-bb-11-cc-33", token)
+			assert.Equal(t, "wss://proxy-apps-prod-ams3-001.ondigitalocean.app/?token=aa-bb-11-cc-33", url.String())
+			return tm.listen
+		}
+
+		config.Args = append(config.Args, appID, jobName)
+		config.Doit.Set(config.NS, doctl.ArgAppJobInvocation, jobInvocationID)
+		config.Doit.Set(config.NS, doctl.ArgAppLogFollow, true)
+
+		err := RunAppsGetLogs(config)
+		require.NoError(t, err)
+	})
+}
+
+func TestRunAppsCancelJobInvocation(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		appID := uuid.New().String()
+		jobInvocation := &godo.JobInvocation{
+			ID:           uuid.New().String(),
+			JobName:      "job-name",
+			DeploymentID: uuid.New().String(),
+			Phase:        godo.JOBINVOCATIONPHASE_Pending,
+			Trigger: &godo.JobInvocationTrigger{
+				Type: godo.JOBINVOCATIONTRIGGERTYPE_Scheduled,
+				Scheduled: &godo.TriggerMetadataScheduled{
+					Schedule: &godo.AppJobSpecSchedule{
+						Cron:     "0 0 * * *",
+						TimeZone: "America/New_York",
+					},
+				},
+			},
+			CreatedAt:   time.Now(),
+			StartedAt:   time.Now(),
+			CompletedAt: time.Now(),
+		}
+
+		opts := &godo.CancelJobInvocationOptions{
+			JobName: jobInvocation.JobName,
+		}
+
+		tm.apps.EXPECT().CancelJobInvocation(appID, jobInvocation.ID, opts).Times(1).DoAndReturn(func(appID, jobInvocationID string, req *godo.CancelJobInvocationOptions) (*godo.JobInvocation, error) {
+			jobInvocation.Phase = godo.JOBINVOCATIONPHASE_Canceled
+			return jobInvocation, nil
+		})
+
+		config.Args = append(config.Args, appID, jobInvocation.ID)
+		config.Doit.Set(config.NS, doctl.ArgAppJobName, jobInvocation.JobName)
+
+		err := RunAppsCancelJobInvocation(config)
 		require.NoError(t, err)
 	})
 }

@@ -1,21 +1,34 @@
 package commands
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/digitalocean/godo"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	clientauthentication "k8s.io/client-go/pkg/apis/clientauthentication/v1beta1"
+	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/do"
+	"github.com/digitalocean/doctl/internal/kubernetes/sso"
 )
 
 var (
+	scaleDownUtilizationThreshold = 0.5
+	scaleDownUnneededTime         = "1m30s"
+
 	testCluster = do.KubernetesCluster{
 		KubernetesCluster: &godo.KubernetesCluster{
 			ID:          "cde2c0d6-41e3-479e-ba60-ad971227232b",
@@ -38,6 +51,45 @@ var (
 					"4.3.2.1/32",
 				},
 			},
+			ClusterAutoscalerConfiguration: &godo.KubernetesClusterAutoscalerConfiguration{
+				ScaleDownUtilizationThreshold: &scaleDownUtilizationThreshold,
+				ScaleDownUnneededTime:         &scaleDownUnneededTime,
+			},
+			RoutingAgent: &godo.KubernetesRoutingAgent{
+				Enabled: boolPtr(true),
+			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDeviceMetricsExporterPlugin: &godo.KubernetesAmdGpuDeviceMetricsExporterPlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			CorednsAutoscaler: &godo.KubernetesCorednsAutoscaler{
+				Enabled: boolPtr(true),
+			},
+			SSO: &godo.KubernetesClusterSSO{
+				Enabled:  true,
+				Required: false,
+			},
+			IsolatedWorkers: true,
 		},
 	}
 
@@ -83,13 +135,16 @@ var (
 		CurrentContext: "test-context",
 		Contexts: map[string]*clientcmdapi.Context{
 			"test-context": {
-				Cluster: "test-cluster",
+				Cluster:  "test-cluster",
+				AuthInfo: "test-user",
 			},
 		},
 		Clusters: map[string]*clientcmdapi.Cluster{
 			"test-cluster": clientcmdapi.NewCluster(),
 		},
-		AuthInfos: make(map[string]*clientcmdapi.AuthInfo),
+		AuthInfos: map[string]*clientcmdapi.AuthInfo{
+			"test-user": {Token: "test-token"},
+		},
 	}
 
 	testK8sOneClickList = do.OneClicks{
@@ -163,7 +218,7 @@ type mockKubeconfigProvider struct {
 	local, remote, written clientcmdapi.Config
 }
 
-func (m *mockKubeconfigProvider) Remote(_ do.KubernetesService, _ string, _ int) (*clientcmdapi.Config, error) {
+func (m *mockKubeconfigProvider) Remote(_ do.KubernetesService, _ kubeconfigParams) (*clientcmdapi.Config, error) {
 	return &m.local, nil
 }
 
@@ -181,10 +236,12 @@ func (m *mockKubeconfigProvider) ConfigPath() string {
 }
 
 func testK8sCmdService() *KubernetesCommandService {
+	local := *testKubeconfig.DeepCopy()
+	remote := *testKubeconfig.DeepCopy()
 	return &KubernetesCommandService{
 		KubeconfigProvider: &mockKubeconfigProvider{
-			local:  testKubeconfig,
-			remote: testKubeconfig,
+			local:  local,
+			remote: remote,
 		},
 	}
 }
@@ -351,13 +408,12 @@ func TestKubernetesKubeconfigSave(t *testing.T) {
 
 		provider := k8sCmdService.KubeconfigProvider.(*mockKubeconfigProvider)
 		assert.Equal(t, provider.remote, provider.written)
-		assert.Contains(t, provider.written.AuthInfos[""].Exec.Command, "commands.test")
+		assert.Contains(t, provider.written.AuthInfos["test-user"].Exec.Command, "commands.test")
 	})
 
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
-		expirySeconds := int64(60)
 		config.Args = append(config.Args, testCluster.ID)
-		config.Doit.Set(config.NS, doctl.ArgKubeConfigExpirySeconds, expirySeconds)
+		config.Doit.Set(config.NS, doctl.ArgKubeConfigExpirySeconds, 60)
 
 		k8sCmdService := testK8sCmdService()
 		err := k8sCmdService.RunKubernetesKubeconfigSave(config)
@@ -365,8 +421,8 @@ func TestKubernetesKubeconfigSave(t *testing.T) {
 
 		provider := k8sCmdService.KubeconfigProvider.(*mockKubeconfigProvider)
 		assert.Equal(t, provider.remote, provider.written)
-		assert.Equal(t, provider.remote.AuthInfos[""].Token, provider.written.AuthInfos[""].Token)
-		assert.Nil(t, provider.written.AuthInfos[""].Exec)
+		assert.Equal(t, provider.remote.AuthInfos["test-user"].Token, provider.written.AuthInfos["test-user"].Token)
+		assert.Nil(t, provider.written.AuthInfos["test-user"].Exec)
 	})
 
 	// save the remote kubeconfig locally, verifying that the provided auth
@@ -396,38 +452,206 @@ func TestKubernetesKubeconfigSave(t *testing.T) {
 		assert.Equal(t, provider.remote, provider.written)
 
 		expectedExecContextArg := "--" + doctl.ArgContext + "=" + authContext
-		assert.Contains(t, provider.written.AuthInfos[""].Exec.Args, expectedExecContextArg)
+		assert.Contains(t, provider.written.AuthInfos["test-user"].Exec.Args, expectedExecContextArg)
 	})
 }
 
 func TestKubernetesKubeconfigShow(t *testing.T) {
+	testKubeconfigBytes, err := clientcmd.Write(*testKubeconfig.DeepCopy())
+	assert.NoError(t, err)
+
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
-		kubeconfig := []byte(`i'm some yaml`)
-		tm.kubernetes.EXPECT().GetKubeConfig(testCluster.ID).Return(kubeconfig, nil)
+		tm.kubernetes.EXPECT().GetKubeConfig(testCluster.ID, &godo.KubernetesClusterKubeconfigGetRequest{}).Return(testKubeconfigBytes, nil)
 		config.Args = append(config.Args, testCluster.ID)
-		err := testK8sCmdService().RunKubernetesKubeconfigShow(config)
+		err := kubernetesCommandService().RunKubernetesKubeconfigShow(config)
 		assert.NoError(t, err)
 	})
 
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
-		kubeconfig := []byte(`i'm some yaml`)
 		expirySeconds := int64(60)
-		tm.kubernetes.EXPECT().GetKubeConfigWithExpiry(testCluster.ID, expirySeconds).Return(kubeconfig, nil)
+		tm.kubernetes.EXPECT().GetKubeConfigWithExpiry(testCluster.ID, expirySeconds).Return(testKubeconfigBytes, nil)
 		config.Args = append(config.Args, testCluster.ID)
-		config.Doit.Set(config.NS, doctl.ArgKubeConfigExpirySeconds, expirySeconds)
-		err := testK8sCmdService().RunKubernetesKubeconfigShow(config)
+		config.Doit.Set(config.NS, doctl.ArgKubeConfigExpirySeconds, 60)
+		err := kubernetesCommandService().RunKubernetesKubeconfigShow(config)
 		assert.NoError(t, err)
 	})
 
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
-		kubeconfig := []byte(`i'm some yaml`)
 		// it'll see that no UUID is given and do a List call to find the cluster
 		tm.kubernetes.EXPECT().List().Return(testClusterList, nil)
-		tm.kubernetes.EXPECT().GetKubeConfig(testCluster.ID).Return(kubeconfig, nil)
+		tm.kubernetes.EXPECT().GetKubeConfig(testCluster.ID, &godo.KubernetesClusterKubeconfigGetRequest{}).Return(testKubeconfigBytes, nil)
 		config.Args = append(config.Args, testCluster.Name)
-		err := testK8sCmdService().RunKubernetesKubeconfigShow(config)
+		err := kubernetesCommandService().RunKubernetesKubeconfigShow(config)
 		assert.NoError(t, err)
 	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		get := &godo.KubernetesClusterKubeconfigGetRequest{Type: "sso"}
+		tm.kubernetes.EXPECT().GetKubeConfig(testCluster.ID, get).Return(testKubeconfigBytes, nil)
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgKubeConfigType, "sso")
+		err := kubernetesCommandService().RunKubernetesKubeconfigShow(config)
+		assert.NoError(t, err)
+	})
+
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgKubeConfigType, "token")
+		config.Doit.Set(config.NS, doctl.ArgKubeConfigExpirySeconds, 60)
+		err := kubernetesCommandService().RunKubernetesKubeconfigShow(config)
+		assert.ErrorContains(t, err, "cannot use type flag")
+	})
+}
+
+func TestRunKubernetesKubeconfigExecCredential(t *testing.T) {
+	clusterIDWithCachedSSOCreds := "cluster-id-with-cached-sso-creds"
+	clusterIDWithCachedTokenCreds := "cluster-id-with-cached-token-creds"
+
+	testRoot := t.TempDir()
+	origConfigHomeFn := defaultConfigHome
+	defaultConfigHome = func() string {
+		return filepath.Join(testRoot, "doctl")
+	}
+	t.Cleanup(func() { defaultConfigHome = origConfigHomeFn })
+
+	execCredCacheDir := filepath.Join(testRoot, "doctl", "cache", "exec-credential")
+	require.NoError(t, os.MkdirAll(execCredCacheDir, 0o700))
+
+	// Truncate so JSON cache round-trips match (metav1 time encoding drops sub-second precision).
+	expiryCached := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	expiryNew := time.Now().Add(2 * time.Hour).UTC().Truncate(time.Second)
+	cachedCred := &clientauthentication.ExecCredential{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       execCredentialKind,
+			APIVersion: clientauthentication.SchemeGroupVersion.String(),
+		},
+		Status: &clientauthentication.ExecCredentialStatus{
+			Token:               "cached",
+			ExpirationTimestamp: &metav1.Time{Time: expiryCached},
+		},
+	}
+	fToken, err := os.Create(filepath.Join(execCredCacheDir, clusterIDWithCachedTokenCreds+".json"))
+	require.NoError(t, err)
+	require.NoError(t, json.NewEncoder(fToken).Encode(cachedCred))
+	require.NoError(t, fToken.Close())
+
+	fSSO, err := os.Create(filepath.Join(execCredCacheDir, clusterIDWithCachedSSOCreds+"_sso.json"))
+	require.NoError(t, err)
+	require.NoError(t, json.NewEncoder(fSSO).Encode(cachedCred))
+	require.NoError(t, fSSO.Close())
+
+	type execCredCase struct {
+		name         string
+		setArgs      func(config *CmdConfig)
+		prepareMocks func(t *testing.T, tm *tcMocks)
+		wantToken    string
+		wantExp      time.Time
+		assertCache  func(t *testing.T, cacheDir string, got clientauthentication.ExecCredential)
+	}
+
+	tests := []execCredCase{
+		{
+			name: "new token login",
+			setArgs: func(config *CmdConfig) {
+				// double-duty: also ensures that cached SSO cred is not used when token cred is requested
+				config.Args = []string{clusterIDWithCachedSSOCreds}
+				config.Doit.Set(config.NS, doctl.ArgVersion, "v1beta1")
+			},
+			prepareMocks: func(t *testing.T, tm *tcMocks) {
+				tm.kubernetes.EXPECT().GetCredentials(clusterIDWithCachedSSOCreds).Return(&do.KubernetesClusterCredentials{
+					KubernetesClusterCredentials: &godo.KubernetesClusterCredentials{
+						Token:     "do-token",
+						ExpiresAt: expiryNew,
+					},
+				}, nil)
+			},
+			wantToken: "do-token",
+			wantExp:   expiryNew,
+			assertCache: func(t *testing.T, cacheDir string, got clientauthentication.ExecCredential) {
+				p := filepath.Join(cacheDir, clusterIDWithCachedSSOCreds+".json")
+				onDisk, err := os.ReadFile(p)
+				require.NoError(t, err)
+				var cached clientauthentication.ExecCredential
+				require.NoError(t, json.Unmarshal(onDisk, &cached))
+				require.Equal(t, got.Status.Token, cached.Status.Token)
+				require.Equal(t, got.Status.ExpirationTimestamp.UTC(), cached.Status.ExpirationTimestamp.UTC())
+			},
+		},
+		{
+			name: "token cache hit",
+			setArgs: func(config *CmdConfig) {
+				config.Args = []string{clusterIDWithCachedTokenCreds}
+				config.Doit.Set(config.NS, doctl.ArgVersion, "v1beta1")
+			},
+			wantToken: "cached",
+			wantExp:   expiryCached,
+		},
+		{
+			name: "new sso login",
+			setArgs: func(config *CmdConfig) {
+				// double-duty: also ensures that cached token cred is not used when SSO cred is requested
+				config.Args = []string{clusterIDWithCachedTokenCreds}
+				config.Doit.Set(config.NS, doctl.ArgVersion, "v1beta1")
+				config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
+				config.Doit.Set(config.NS, doctl.ArgKubernetesSSOClientID, "oidc-client-id")
+				config.Doit.Set(config.NS, doctl.ArgKubernetesSSOLocalServerPort, 8080)
+			},
+			wantToken: "oidc-id-token",
+			wantExp:   expiryNew,
+			assertCache: func(t *testing.T, cacheDir string, got clientauthentication.ExecCredential) {
+				p := filepath.Join(cacheDir, clusterIDWithCachedTokenCreds+"_sso.json")
+				onDisk, err := os.ReadFile(p)
+				require.NoError(t, err)
+				var cached clientauthentication.ExecCredential
+				require.NoError(t, json.Unmarshal(onDisk, &cached))
+				require.Equal(t, got.Status.Token, cached.Status.Token)
+				require.Equal(t, got.Status.ExpirationTimestamp.UTC(), cached.Status.ExpirationTimestamp.UTC())
+			},
+		},
+		{
+			name: "sso cache hit",
+			setArgs: func(config *CmdConfig) {
+				config.Args = []string{clusterIDWithCachedSSOCreds}
+				config.Doit.Set(config.NS, doctl.ArgVersion, "v1beta1")
+				config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
+				config.Doit.Set(config.NS, doctl.ArgKubernetesSSOClientID, "oidc-client-id")
+				config.Doit.Set(config.NS, doctl.ArgKubernetesSSOLocalServerPort, 8080)
+			},
+			wantToken: "cached",
+			wantExp:   expiryCached,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+				if tt.prepareMocks != nil {
+					tt.prepareMocks(t, tm)
+				}
+
+				var buf bytes.Buffer
+				config.Out = &buf
+				tt.setArgs(config)
+
+				svc := kubernetesCommandService()
+				svc.ssoLogin = func(ctx context.Context, clientID, issuerURL string, opts ...sso.LocalOIDCLoginOption) (string, time.Time, error) {
+					return "oidc-id-token", expiryNew, nil
+				}
+
+				err := svc.RunKubernetesKubeconfigExecCredential(config)
+				require.NoError(t, err)
+
+				var got clientauthentication.ExecCredential
+				require.NoError(t, json.Unmarshal(buf.Bytes(), &got))
+				require.Equal(t, tt.wantToken, got.Status.Token)
+				require.Equal(t, tt.wantExp.UTC(), got.Status.ExpirationTimestamp.UTC())
+
+				if tt.assertCache != nil {
+					tt.assertCache(t, execCredCacheDir, got)
+				}
+			})
+		})
+	}
 }
 
 func TestKubernetesList(t *testing.T) {
@@ -504,7 +728,7 @@ func TestKubernetesCreate(t *testing.T) {
 				Day:       godo.KubernetesMaintenanceDayAny,
 			},
 			AutoUpgrade: true,
-			HA:          true,
+			HA:          boolPtr(true),
 			ControlPlaneFirewall: &godo.KubernetesControlPlaneFirewall{
 				Enabled: boolPtr(true),
 				AllowedAddresses: []string{
@@ -512,6 +736,46 @@ func TestKubernetesCreate(t *testing.T) {
 					"4.3.2.1/32",
 				},
 			},
+			ClusterAutoscalerConfiguration: &godo.KubernetesClusterAutoscalerConfiguration{
+				ScaleDownUtilizationThreshold: &scaleDownUtilizationThreshold,
+				ScaleDownUnneededTime:         &scaleDownUnneededTime,
+			},
+			RoutingAgent: &godo.KubernetesRoutingAgent{
+				Enabled: boolPtr(true),
+			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDeviceMetricsExporterPlugin: &godo.KubernetesAmdGpuDeviceMetricsExporterPlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			CorednsAutoscaler: &godo.KubernetesCorednsAutoscaler{
+				Enabled: boolPtr(true),
+			},
+			SSO: &godo.KubernetesClusterSSO{
+				Enabled:  true,
+				Required: false,
+			},
+			IsolatedWorkers:  true,
+			GPUOperatorReady: true,
 		}
 		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
 
@@ -530,10 +794,32 @@ func TestKubernetesCreate(t *testing.T) {
 			),
 		})
 		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, testCluster.AutoUpgrade)
-		config.Doit.Set(config.NS, doctl.ArgHA, testCluster.HA)
+		config.Doit.Set(config.NS, doctl.ArgHA, true)
 
 		config.Doit.Set(config.NS, doctl.ArgEnableControlPlaneFirewall, testCluster.ControlPlaneFirewall.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgControlPlaneFirewallAllowedAddresses, testCluster.ControlPlaneFirewall.AllowedAddresses)
+
+		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, testCluster.ClusterAutoscalerConfiguration.ScaleDownUtilizationThreshold)
+		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime, testCluster.ClusterAutoscalerConfiguration.ScaleDownUnneededTime)
+
+		config.Doit.Set(config.NS, doctl.ArgEnableRoutingAgent, testCluster.RoutingAgent.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin, testCluster.P2pOciRegistryPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, testCluster.NfsCsiPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDevicePlugin, testCluster.AmdGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, testCluster.AmdGpuDeviceMetricsExporterPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDevicePlugin, testCluster.NvidiaGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDraDriver, testCluster.NvidiaGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDraDriver, testCluster.AmdGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableRDMASharedDevicePlugin, testCluster.RdmaSharedDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableCorednsAutoscaler, testCluster.CorednsAutoscaler.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgIsolatedWorkers, true)
+		config.Doit.Set(config.NS, doctl.ArgGPUOperatorReady, true)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesEnableSSO, true)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesRequireSSO, false)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
+		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOClientID, "oidc-client-id")
+		r.SSO.IssuerURL = "https://issuer.example"
+		r.SSO.ClientID = "oidc-client-id"
 
 		// Test with no vpc-uuid specified
 		err := testK8sCmdService().RunKubernetesClusterCreate("c-8", 3)(config)
@@ -547,6 +833,27 @@ func TestKubernetesCreate(t *testing.T) {
 		err = testK8sCmdService().RunKubernetesClusterCreate("c-8", 3)(config)
 		assert.NoError(t, err)
 
+		// Test with worker subnet specified
+		config.Doit.Set(config.NS, doctl.ArgWorkerSubnetUUID, "worker-subnet-uuid")
+		r.WorkerSubnetUUID = "worker-subnet-uuid"
+		testCluster.WorkerSubnetUUID = "worker-subnet-uuid"
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+		err = testK8sCmdService().RunKubernetesClusterCreate("c-8", 3)(config)
+		assert.NoError(t, err)
+
+		// Test vpc-native
+		const podNetwork = "10.100.0.0/16"
+		const serviceNetwork = "10.101.0.0/16"
+		config.Doit.Set(config.NS, doctl.ArgClusterSubnet, podNetwork)
+		config.Doit.Set(config.NS, doctl.ArgServiceSubnet, serviceNetwork)
+		r.ClusterSubnet = podNetwork
+		r.ServiceSubnet = serviceNetwork
+		testCluster.ClusterSubnet = podNetwork
+		testCluster.ServiceSubnet = serviceNetwork
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+		err = testK8sCmdService().RunKubernetesClusterCreate("c-8", 3)(config)
+		assert.NoError(t, err)
+
 		// Test with 1-clicks specified
 		config.Doit.Set(config.NS, doctl.ArgOneClicks, []string{"slug1", "slug2"})
 		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
@@ -554,10 +861,265 @@ func TestKubernetesCreate(t *testing.T) {
 		err = testK8sCmdService().RunKubernetesClusterCreate("c-8", 3)(config)
 		assert.NoError(t, err)
 	})
+
+	// Test HA omitted: when ArgHA is not set, the create request has HA: nil (API applies version-specific default).
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		clusterName := "ha-omit-cluster"
+		r := godo.KubernetesClusterCreateRequest{
+			Name:        clusterName,
+			RegionSlug:  "sfo2",
+			VersionSlug: "1.13.0",
+			NodePools: []*godo.KubernetesNodePoolCreateRequest{
+				{
+					Name:  clusterName + "-default-pool",
+					Size:  "s-1vcpu-2gb",
+					Count: 3,
+				},
+			},
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  false,
+			SurgeUpgrade: true,
+			HA:           nil, // omitted when --ha not passed
+		}
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, clusterName)
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, "sfo2")
+		config.Doit.Set(config.NS, doctl.ArgClusterVersionSlug, "1.13.0")
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, "s-1vcpu-2gb")
+		config.Doit.Set(config.NS, doctl.ArgNodePoolCount, 3)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgSurgeUpgrade, true)
+		// Do NOT set ArgHA - simulates user omitting --ha
+
+		err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
+		assert.NoError(t, err)
+	})
+
+	// Test Insights logs opt-in: the request only carries Insights when --enable-insights-logs is explicitly set.
+	for name, tc := range map[string]struct {
+		set      bool
+		value    bool
+		expected *godo.KubernetesInsightsTelemetryOptIn
+	}{
+		"flag omitted sends no insights": {set: false, expected: nil},
+		"opt in":                         {set: true, value: true, expected: &godo.KubernetesInsightsTelemetryOptIn{Logs: boolPtr(true)}},
+		"explicit opt out":               {set: true, value: false, expected: &godo.KubernetesInsightsTelemetryOptIn{Logs: boolPtr(false)}},
+	} {
+		tc := tc
+		t.Run("insights logs "+name, func(t *testing.T) {
+			withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+				clusterName := "insights-cluster"
+				r := godo.KubernetesClusterCreateRequest{
+					Name:        clusterName,
+					RegionSlug:  "sfo2",
+					VersionSlug: "1.13.0",
+					NodePools: []*godo.KubernetesNodePoolCreateRequest{
+						{
+							Name:  clusterName + "-default-pool",
+							Size:  "s-1vcpu-2gb",
+							Count: 3,
+						},
+					},
+					MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+						StartTime: "00:00",
+						Day:       godo.KubernetesMaintenanceDayAny,
+					},
+					SurgeUpgrade: true,
+					Insights:     tc.expected,
+				}
+				tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+
+				config.Args = append(config.Args, clusterName)
+				config.Doit.Set(config.NS, doctl.ArgRegionSlug, "sfo2")
+				config.Doit.Set(config.NS, doctl.ArgClusterVersionSlug, "1.13.0")
+				config.Doit.Set(config.NS, doctl.ArgSizeSlug, "s-1vcpu-2gb")
+				config.Doit.Set(config.NS, doctl.ArgNodePoolCount, 3)
+				config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+				config.Doit.Set(config.NS, doctl.ArgSurgeUpgrade, true)
+				if tc.set {
+					config.Doit.Set(config.NS, doctl.ArgEnableInsightsLogs, tc.value)
+				}
+
+				err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
+				assert.NoError(t, err)
+			})
+		})
+	}
+
+	// Test NFS CSI plugin omitted: when the flag is not set, nfs_csi_plugin is left unset
+	// so the API can apply its default.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		clusterName := "nfs-omit-cluster"
+		r := godo.KubernetesClusterCreateRequest{
+			Name:        clusterName,
+			RegionSlug:  "sfo2",
+			VersionSlug: "1.13.0",
+			NodePools: []*godo.KubernetesNodePoolCreateRequest{
+				{
+					Name:  clusterName + "-default-pool",
+					Size:  "s-1vcpu-2gb",
+					Count: 3,
+				},
+			},
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  false,
+			SurgeUpgrade: true,
+			NfsCsiPlugin: nil,
+		}
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, clusterName)
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, "sfo2")
+		config.Doit.Set(config.NS, doctl.ArgClusterVersionSlug, "1.13.0")
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, "s-1vcpu-2gb")
+		config.Doit.Set(config.NS, doctl.ArgNodePoolCount, 3)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgSurgeUpgrade, true)
+		// Do NOT set ArgEnableNfsCsiPlugin - simulates omitting --enable-nfs-csi-plugin
+
+		err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
+		assert.NoError(t, err)
+	})
+
+	// Test NFS CSI plugin explicit false: --enable-nfs-csi-plugin=false is forwarded.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		clusterName := "nfs-false-cluster"
+		r := godo.KubernetesClusterCreateRequest{
+			Name:        clusterName,
+			RegionSlug:  "sfo2",
+			VersionSlug: "1.13.0",
+			NodePools: []*godo.KubernetesNodePoolCreateRequest{
+				{
+					Name:  clusterName + "-default-pool",
+					Size:  "s-1vcpu-2gb",
+					Count: 3,
+				},
+			},
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  false,
+			SurgeUpgrade: true,
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(false),
+			},
+		}
+		tm.kubernetes.EXPECT().Create(&r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, clusterName)
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, "sfo2")
+		config.Doit.Set(config.NS, doctl.ArgClusterVersionSlug, "1.13.0")
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, "s-1vcpu-2gb")
+		config.Doit.Set(config.NS, doctl.ArgNodePoolCount, 3)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgSurgeUpgrade, true)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, false)
+
+		err := testK8sCmdService().RunKubernetesClusterCreate("s-1vcpu-2gb", 3)(config)
+		assert.NoError(t, err)
+	})
 }
 
 func TestKubernetesUpdate(t *testing.T) {
 	// by id
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		r := godo.KubernetesClusterUpdateRequest{
+			Name: testCluster.Name,
+			Tags: testCluster.Tags,
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:      boolPtr(false),
+			HA:               boolPtr(true),
+			GPUOperatorReady: boolPtr(true),
+			ControlPlaneFirewall: &godo.KubernetesControlPlaneFirewall{
+				Enabled: boolPtr(true),
+				AllowedAddresses: []string{
+					"1.2.3.4",
+					"4.3.2.1/32",
+				},
+			},
+			ClusterAutoscalerConfiguration: &godo.KubernetesClusterAutoscalerConfiguration{
+				ScaleDownUtilizationThreshold: &scaleDownUtilizationThreshold,
+				ScaleDownUnneededTime:         &scaleDownUnneededTime,
+			},
+			RoutingAgent: &godo.KubernetesRoutingAgent{
+				Enabled: boolPtr(true),
+			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDeviceMetricsExporterPlugin: &godo.KubernetesAmdGpuDeviceMetricsExporterPlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			CorednsAutoscaler: &godo.KubernetesCorednsAutoscaler{
+				Enabled: boolPtr(true),
+			},
+			SSO: &godo.KubernetesClusterSSO{
+				Enabled:   true,
+				IssuerURL: "https://issuer.example",
+				ClientID:  "oidc-client-id",
+			},
+		}
+		tm.kubernetes.EXPECT().Update(testCluster.ID, &r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgClusterName, testCluster.Name)
+		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
+		config.Doit.Set(config.NS, doctl.ArgHA, true)
+		config.Doit.Set(config.NS, doctl.ArgGPUOperatorReady, true)
+		config.Doit.Set(config.NS, doctl.ArgEnableControlPlaneFirewall, testCluster.ControlPlaneFirewall.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgControlPlaneFirewallAllowedAddresses, testCluster.ControlPlaneFirewall.AllowedAddresses)
+		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, testCluster.ClusterAutoscalerConfiguration.ScaleDownUtilizationThreshold)
+		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime, testCluster.ClusterAutoscalerConfiguration.ScaleDownUnneededTime)
+		config.Doit.Set(config.NS, doctl.ArgEnableRoutingAgent, testCluster.RoutingAgent.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin, testCluster.P2pOciRegistryPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, testCluster.NfsCsiPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDevicePlugin, testCluster.AmdGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, testCluster.AmdGpuDeviceMetricsExporterPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDevicePlugin, testCluster.NvidiaGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDraDriver, testCluster.NvidiaGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDraDriver, testCluster.AmdGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableRDMASharedDevicePlugin, testCluster.RdmaSharedDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableCorednsAutoscaler, testCluster.CorednsAutoscaler.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesEnableSSO, true)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
+		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOClientID, "oidc-client-id")
+
+		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// by name
 	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
 		r := godo.KubernetesClusterUpdateRequest{
 			Name: testCluster.Name,
@@ -575,38 +1137,44 @@ func TestKubernetesUpdate(t *testing.T) {
 					"4.3.2.1/32",
 				},
 			},
-		}
-		tm.kubernetes.EXPECT().Update(testCluster.ID, &r).Return(&testCluster, nil)
-
-		config.Args = append(config.Args, testCluster.ID)
-		config.Doit.Set(config.NS, doctl.ArgClusterName, testCluster.Name)
-		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
-		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
-		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
-		config.Doit.Set(config.NS, doctl.ArgHA, true)
-		config.Doit.Set(config.NS, doctl.ArgEnableControlPlaneFirewall, testCluster.ControlPlaneFirewall.Enabled)
-		config.Doit.Set(config.NS, doctl.ArgControlPlaneFirewallAllowedAddresses, testCluster.ControlPlaneFirewall.AllowedAddresses)
-
-		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
-		assert.NoError(t, err)
-	})
-
-	// by name
-	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
-		r := godo.KubernetesClusterUpdateRequest{
-			Name: testCluster.Name,
-			Tags: testCluster.Tags,
-			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
-				StartTime: "00:00",
-				Day:       godo.KubernetesMaintenanceDayAny,
+			ClusterAutoscalerConfiguration: &godo.KubernetesClusterAutoscalerConfiguration{
+				ScaleDownUtilizationThreshold: &scaleDownUtilizationThreshold,
+				ScaleDownUnneededTime:         &scaleDownUnneededTime,
 			},
-			AutoUpgrade: boolPtr(false),
-			ControlPlaneFirewall: &godo.KubernetesControlPlaneFirewall{
+			RoutingAgent: &godo.KubernetesRoutingAgent{
 				Enabled: boolPtr(true),
-				AllowedAddresses: []string{
-					"1.2.3.4",
-					"4.3.2.1/32",
-				},
+			},
+			P2pOciRegistryPlugin: &godo.KubernetesP2pOciRegistry{
+				Enabled: boolPtr(true),
+			},
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDevicePlugin: &godo.KubernetesAmdGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDeviceMetricsExporterPlugin: &godo.KubernetesAmdGpuDeviceMetricsExporterPlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDevicePlugin: &godo.KubernetesNvidiaGpuDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			NvidiaGpuDraDriver: &godo.KubernetesNvidiaGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			AmdGpuDraDriver: &godo.KubernetesAmdGpuDraDriver{
+				Enabled: boolPtr(true),
+			},
+			RdmaSharedDevicePlugin: &godo.KubernetesRdmaSharedDevicePlugin{
+				Enabled: boolPtr(true),
+			},
+			CorednsAutoscaler: &godo.KubernetesCorednsAutoscaler{
+				Enabled: boolPtr(true),
+			},
+			SSO: &godo.KubernetesClusterSSO{
+				Enabled:   true,
+				IssuerURL: "https://issuer.example",
+				ClientID:  "oidc-client-id",
 			},
 		}
 		tm.kubernetes.EXPECT().List().Return(testClusterList, nil)
@@ -617,8 +1185,76 @@ func TestKubernetesUpdate(t *testing.T) {
 		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
 		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
 		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
+		config.Doit.Set(config.NS, doctl.ArgHA, true)
 		config.Doit.Set(config.NS, doctl.ArgEnableControlPlaneFirewall, testCluster.ControlPlaneFirewall.Enabled)
 		config.Doit.Set(config.NS, doctl.ArgControlPlaneFirewallAllowedAddresses, testCluster.ControlPlaneFirewall.AllowedAddresses)
+		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUtilizationThreshold, testCluster.ClusterAutoscalerConfiguration.ScaleDownUtilizationThreshold)
+		config.Doit.Set(config.NS, doctl.ArgClusterAutoscalerScaleDownUnneededTime, testCluster.ClusterAutoscalerConfiguration.ScaleDownUnneededTime)
+		config.Doit.Set(config.NS, doctl.ArgEnableRoutingAgent, testCluster.RoutingAgent.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnablePeerToPeerOciRegistryPlugin, testCluster.P2pOciRegistryPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, testCluster.NfsCsiPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDevicePlugin, testCluster.AmdGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDeviceMetricsExporterPlugin, testCluster.AmdGpuDeviceMetricsExporterPlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDevicePlugin, testCluster.NvidiaGpuDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableNvidiaGpuDraDriver, testCluster.NvidiaGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableAmdGpuDraDriver, testCluster.AmdGpuDraDriver.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableRDMASharedDevicePlugin, testCluster.RdmaSharedDevicePlugin.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgEnableCorednsAutoscaler, testCluster.CorednsAutoscaler.Enabled)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesEnableSSO, true)
+		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOIssuerURL, "https://issuer.example")
+		config.Doit.Set(config.NS, doctl.ArgKubernetesSSOClientID, "oidc-client-id")
+
+		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// Test NFS CSI plugin omitted: when the flag is not set, nfs_csi_plugin is left unset.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		r := godo.KubernetesClusterUpdateRequest{
+			Name: testCluster.Name,
+			Tags: testCluster.Tags,
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade:  boolPtr(false),
+			NfsCsiPlugin: nil,
+		}
+		tm.kubernetes.EXPECT().Update(testCluster.ID, &r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgClusterName, testCluster.Name)
+		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
+		// Do NOT set ArgEnableNfsCsiPlugin - simulates omitting --enable-nfs-csi-plugin
+
+		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
+		assert.NoError(t, err)
+	})
+
+	// Test NFS CSI plugin explicit false: --enable-nfs-csi-plugin=false is forwarded.
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		r := godo.KubernetesClusterUpdateRequest{
+			Name: testCluster.Name,
+			Tags: testCluster.Tags,
+			MaintenancePolicy: &godo.KubernetesMaintenancePolicy{
+				StartTime: "00:00",
+				Day:       godo.KubernetesMaintenanceDayAny,
+			},
+			AutoUpgrade: boolPtr(false),
+			NfsCsiPlugin: &godo.KubernetesNfsCsiPlugin{
+				Enabled: boolPtr(false),
+			},
+		}
+		tm.kubernetes.EXPECT().Update(testCluster.ID, &r).Return(&testCluster, nil)
+
+		config.Args = append(config.Args, testCluster.ID)
+		config.Doit.Set(config.NS, doctl.ArgClusterName, testCluster.Name)
+		config.Doit.Set(config.NS, doctl.ArgTag, testCluster.Tags)
+		config.Doit.Set(config.NS, doctl.ArgMaintenanceWindow, "any=00:00")
+		config.Doit.Set(config.NS, doctl.ArgAutoUpgrade, false)
+		config.Doit.Set(config.NS, doctl.ArgEnableNfsCsiPlugin, false)
 
 		err := testK8sCmdService().RunKubernetesClusterUpdate(config)
 		assert.NoError(t, err)
@@ -1352,7 +1988,7 @@ func (n *nilCluster) Get(clusterID string) (*do.KubernetesCluster, error) {
 }
 
 func Test_waitForClusterRunningDoesntPanicWithNilGet(t *testing.T) {
-	cluster, err := waitForClusterRunning(&nilCluster{}, "123")
+	cluster, err := waitForClusterRunning(newTestWaiter(), &nilCluster{}, "123")
 	require.Nil(t, cluster)
 	require.EqualError(t, err, "can't find 123")
 }

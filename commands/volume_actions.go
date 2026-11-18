@@ -16,10 +16,11 @@ package commands
 import (
 	"strconv"
 
+	"github.com/spf13/cobra"
+
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/commands/displayers"
 	"github.com/digitalocean/doctl/do"
-	"github.com/spf13/cobra"
 )
 
 type volumeActionFn func(das do.VolumeActionsService) (*do.Action, error)
@@ -78,20 +79,20 @@ func VolumeAction() *Command {
 
 	cmdVolumeActionsList := CmdBuilder(cmd, RunVolumeActionsList, "list <volume-id>", "Retrieve a list of actions taken on a volume", `Retrieves a list of actions taken on a volume. The following details are provided:`+actionDetail, Writer,
 		aliasOpt("ls"), displayerType(&displayers.Action{}))
-	cmdVolumeActionsList.Example = `The following example retrieves a list of actions taken on a volume with the UUID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return ony the resource ID and status for each action listed: doctl compute volume-action list f81d4fae-7dec-11d0-a765-00a0c91e6bf6 --format ResourceID,Status`
+	cmdVolumeActionsList.Example = `The following example retrieves a list of actions taken on a volume with the UUID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return only the resource ID and status for each action listed: doctl compute volume-action list f81d4fae-7dec-11d0-a765-00a0c91e6bf6 --format ResourceID,Status`
 
 	cmdRunVolumeAttach := CmdBuilder(cmd, RunVolumeAttach, "attach <volume-id> <droplet-id>", "Attach a volume to a Droplet", `Attaches a block storage volume to a Droplet.
 
-You can only attach one Droplet to a volume at a time. However, you can attach up to five different volumes to a Droplet at a time.
+You can only attach one Droplet to a volume at a time. However, you can attach up to fifteen different volumes to a Droplet at a time.
 
 When you attach a pre-formatted volume to Ubuntu, Debian, Fedora, Fedora Atomic, and CentOS Droplets created on or after April 26, 2018, the volume automatically mounts. On older Droplets, additional configuration is required. Visit https://docs.digitalocean.com/products/volumes/how-to/mount/ for details`, Writer,
 		aliasOpt("a"))
-	AddBoolFlag(cmdRunVolumeAttach, doctl.ArgCommandWait, "", false, "Instructs the terminal to wait for the volume to attach before returning control to the user")
+	AddActionWaitFlags(cmdRunVolumeAttach, false, "Instructs the terminal to wait for the volume to attach before returning control to the user")
 	cmdRunVolumeAttach.Example = `The following example attaches a volume with the UUID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + ` to a Droplet with the ID ` + "`" + `386734086` + "`" + `: doctl compute volume-action attach f81d4fae-7dec-11d0-a765-00a0c91e6bf6 386734086`
 
 	cmdRunVolumeDetach := CmdBuilder(cmd, RunVolumeDetach, "detach <volume-id> <droplet-id>", "Detach a volume from a Droplet", `Detaches a block storage volume from a Droplet.`, Writer,
 		aliasOpt("d"))
-	AddBoolFlag(cmdRunVolumeDetach, doctl.ArgCommandWait, "", false, "Instructs the terminal to wait for the volume to detach before returning control to the user")
+	AddActionWaitFlags(cmdRunVolumeDetach, false, "Instructs the terminal to wait for the volume to detach before returning control to the user")
 	cmdRunVolumeDetach.Example = `The following example detaches a volume with the UUID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + ` from a Droplet with the ID ` + "`" + `386734086` + "`" + `: doctl compute volume-action detach f81d4fae-7dec-11d0-a765-00a0c91e6bf6 386734086`
 
 	CmdBuilder(cmd, RunVolumeDetach, "detach-by-droplet-id <volume-id> <droplet-id>", "(Deprecated) Detach a volume. Use `detach` instead.", "This command detaches a volume. This command is deprecated. Use `doctl compute volume-action detach` instead.",
@@ -105,7 +106,7 @@ Volumes may only be resized upwards. The maximum size for a volume is 16TiB.`, W
 		requiredOpt())
 	AddStringFlag(cmdRunVolumeResize, doctl.ArgRegionSlug, "", "", "The volume's current region",
 		requiredOpt())
-	AddBoolFlag(cmdRunVolumeResize, doctl.ArgCommandWait, "", false, "Instructs the terminal to wait for the volume to complete resizing before returning control to the user")
+	AddActionWaitFlags(cmdRunVolumeResize, false, "Instructs the terminal to wait for the volume to complete resizing before returning control to the user")
 	cmdRunVolumeResize.Example = `The following example resizes a volume with the UUID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + ` to 120 GiB in the ` + "`" + `nyc1` + "`" + ` region: doctl compute volume-action resize f81d4fae-7dec-11d0-a765-00a0c91e6bf6 --size 120 --region nyc1`
 
 	return cmd

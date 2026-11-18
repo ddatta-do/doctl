@@ -15,24 +15,31 @@ package do
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/digitalocean/godo"
+	"github.com/google/uuid"
 )
 
 // AppsService is the interface that wraps godo AppsService.
 type AppsService interface {
 	Create(req *godo.AppCreateRequest) (*godo.App, error)
+	Find(appRef string) (*godo.App, error)
 	Get(appID string) (*godo.App, error)
 	List(withProjects bool) ([]*godo.App, error)
 	Update(appID string, req *godo.AppUpdateRequest) (*godo.App, error)
 	Delete(appID string) error
 	Propose(req *godo.AppProposeRequest) (*godo.AppProposeResponse, error)
 
+	Restart(appID string, components []string) (*godo.Deployment, error)
 	CreateDeployment(appID string, forceRebuild bool) (*godo.Deployment, error)
 	GetDeployment(appID, deploymentID string) (*godo.Deployment, error)
 	ListDeployments(appID string) ([]*godo.Deployment, error)
 
 	GetLogs(appID, deploymentID, component string, logType godo.AppLogType, follow bool, tail int) (*godo.AppLogs, error)
+	// Deprecated: Use GetExecWithOpts instead
+	GetExec(appID, deploymentID, componentName string) (*godo.AppExec, error)
+	GetExecWithOpts(appID, componentName string, opts *godo.AppGetExecOptions) (*godo.AppExec, error)
 
 	ListRegions() ([]*godo.AppRegion, error)
 
@@ -47,6 +54,18 @@ type AppsService interface {
 
 	ListBuildpacks() ([]*godo.Buildpack, error)
 	UpgradeBuildpack(appID string, options godo.UpgradeBuildpackOptions) (affectedComponents []string, deployment *godo.Deployment, err error)
+
+	GetAppInstances(appID string, opts *godo.GetAppInstancesOpts) ([]*godo.AppInstance, error)
+
+	ListJobInvocations(appID string, opts *godo.ListJobInvocationsOptions) ([]*godo.JobInvocation, error)
+	GetJobInvocation(appID string, jobInvocationID string, opts *godo.GetJobInvocationOptions) (*godo.JobInvocation, error)
+	GetJobInvocationLogs(appID, jobInvocationID string, opts *godo.GetJobInvocationLogsOptions) (*godo.AppLogs, error)
+	CancelJobInvocation(appID, jobInvocationID string, opts *godo.CancelJobInvocationOptions) (*godo.JobInvocation, error)
+
+	ListEvents(appID string, opts *godo.ListEventsOptions) ([]*godo.Event, error)
+	GetEvent(appID, eventID string) (*godo.Event, error)
+	CancelEvent(appID, eventID string) (*godo.Event, error)
+	GetEventLogs(appID, eventID string, opts *godo.GetEventLogsOptions) (*godo.AppLogs, error)
 }
 
 type appsService struct {
@@ -72,11 +91,32 @@ func (s *appsService) Create(req *godo.AppCreateRequest) (*godo.App, error) {
 	return app, nil
 }
 
+func (s *appsService) Find(appRef string) (*godo.App, error) {
+	_, err := uuid.Parse(appRef)
+	if err == nil {
+		return s.Get(appRef)
+	}
+
+	apps, err := s.List(false)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, app := range apps {
+		if app.Spec.Name == appRef {
+			return app, nil
+		}
+	}
+
+	return nil, fmt.Errorf("Cannot find app %s", appRef)
+}
+
 func (s *appsService) Get(appID string) (*godo.App, error) {
 	app, _, err := s.client.Apps.Get(s.ctx, appID)
 	if err != nil {
 		return nil, err
 	}
+
 	return app, nil
 }
 
@@ -129,6 +169,16 @@ func (s *appsService) Propose(req *godo.AppProposeRequest) (*godo.AppProposeResp
 		return nil, err
 	}
 	return res, nil
+}
+
+func (s *appsService) Restart(appID string, components []string) (*godo.Deployment, error) {
+	deployment, _, err := s.client.Apps.Restart(s.ctx, appID, &godo.AppRestartRequest{
+		Components: components,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return deployment, nil
 }
 
 func (s *appsService) CreateDeployment(appID string, forceRebuild bool) (*godo.Deployment, error) {
@@ -184,6 +234,23 @@ func (s *appsService) GetLogs(appID, deploymentID, component string, logType god
 		return nil, err
 	}
 	return logs, nil
+}
+
+// Deprecated. Use GetExecWithOpts instead
+func (s *appsService) GetExec(appID, deploymentID, componentName string) (*godo.AppExec, error) {
+	opts := &godo.AppGetExecOptions{
+		DeploymentID: deploymentID,
+	}
+
+	return s.GetExecWithOpts(appID, componentName, opts)
+}
+
+func (s *appsService) GetExecWithOpts(appID, componentName string, opts *godo.AppGetExecOptions) (*godo.AppExec, error) {
+	exec, _, err := s.client.Apps.GetExecWithOpts(s.ctx, appID, componentName, opts)
+	if err != nil {
+		return nil, err
+	}
+	return exec, nil
 }
 
 func (s *appsService) ListRegions() ([]*godo.AppRegion, error) {
@@ -256,4 +323,76 @@ func (s *appsService) UpgradeBuildpack(appID string, options godo.UpgradeBuildpa
 		return nil, nil, err
 	}
 	return res.AffectedComponents, res.Deployment, nil
+}
+
+func (s *appsService) GetAppInstances(appID string, opts *godo.GetAppInstancesOpts) ([]*godo.AppInstance, error) {
+	instances, _, err := s.client.Apps.GetAppInstances(s.ctx, appID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return instances, nil
+}
+
+func (s *appsService) ListJobInvocations(appID string, opts *godo.ListJobInvocationsOptions) ([]*godo.JobInvocation, error) {
+	jobInvocations, _, err := s.client.Apps.ListJobInvocations(s.ctx, appID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return jobInvocations, nil
+}
+
+func (s *appsService) GetJobInvocation(appID string, jobInvocationID string, opts *godo.GetJobInvocationOptions) (*godo.JobInvocation, error) {
+	jobInvocation, _, err := s.client.Apps.GetJobInvocation(s.ctx, appID, jobInvocationID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return jobInvocation, nil
+}
+
+func (s *appsService) GetJobInvocationLogs(appID, jobInvocationID string, opts *godo.GetJobInvocationLogsOptions) (*godo.AppLogs, error) {
+	jobLogs, _, err := s.client.Apps.GetJobInvocationLogs(s.ctx, appID, jobInvocationID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return jobLogs, nil
+}
+
+func (s *appsService) CancelJobInvocation(appID, jobInvocationID string, opts *godo.CancelJobInvocationOptions) (*godo.JobInvocation, error) {
+	jobInvocation, _, err := s.client.Apps.CancelJobInvocation(s.ctx, appID, jobInvocationID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return jobInvocation, nil
+}
+
+func (s *appsService) ListEvents(appID string, opts *godo.ListEventsOptions) ([]*godo.Event, error) {
+	events, _, err := s.client.Apps.ListEvents(s.ctx, appID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
+func (s *appsService) GetEvent(appID, eventID string) (*godo.Event, error) {
+	event, _, err := s.client.Apps.GetEvent(s.ctx, appID, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+func (s *appsService) CancelEvent(appID, eventID string) (*godo.Event, error) {
+	event, _, err := s.client.Apps.CancelEvent(s.ctx, appID, eventID)
+	if err != nil {
+		return nil, err
+	}
+	return event, nil
+}
+
+func (s *appsService) GetEventLogs(appID, eventID string, opts *godo.GetEventLogsOptions) (*godo.AppLogs, error) {
+	logs, _, err := s.client.Apps.GetEventLogs(s.ctx, appID, eventID, opts)
+	if err != nil {
+		return nil, err
+	}
+	return logs, nil
 }

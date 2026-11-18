@@ -1,0 +1,860 @@
+/*
+Copyright 2026 The Doctl Authors All rights reserved.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package commands
+
+import (
+	"bytes"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/digitalocean/doctl"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+func TestValidateAgentManifest_FlatOK(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: opencode\n"))
+	assert.True(t, v.ok())
+	assert.Empty(t, v.Errors)
+}
+
+func TestValidateAgentManifest_EnvelopeOK(t *testing.T) {
+	v := validateAgentManifest([]byte(sampleManifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_FlatRequiresHarness(t *testing.T) {
+	v := validateAgentManifest([]byte("env:\n  FOO: bar\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], `"harness"`)
+}
+
+func TestValidateAgentManifest_HarnessKey(t *testing.T) {
+	for _, key := range []string{"harness", "agent"} {
+		for _, adapter := range []string{"opencode", "none", "sandbox"} {
+			v := validateAgentManifest([]byte(key + ": " + adapter + "\n"))
+			assert.True(t, v.ok(), "%s: %s errors=%v", key, adapter, v.Errors)
+			assert.Empty(t, v.Warnings, "%s: %s", key, adapter)
+		}
+		v := validateAgentManifest([]byte(key + ": not-an-adapter\n"))
+		require.False(t, v.ok(), key)
+		assert.Contains(t, strings.Join(v.Errors, "\n"), key, "the error names the key the author wrote")
+	}
+
+	v := validateAgentManifest([]byte("harness: codex\nagent: codex\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], `set "harness" or "agent", not both`)
+}
+
+func TestManifestAgentIsReadsHarnessKey(t *testing.T) {
+	for _, tc := range []struct {
+		manifest string
+		want     bool
+	}{
+		{"harness: none\n", true},
+		{"agent: none\n", true},
+		{"harness: codex\n", false},
+		{"spec:\n  runtime:\n    adapter: none\n", true},
+	} {
+		assert.Equal(t, tc.want, manifestAgentIs([]byte(tc.manifest), "none"), tc.manifest)
+	}
+	doc, err := parseAgentManifest([]byte("harness: openai-agents\n"))
+	require.NoError(t, err)
+	assert.Equal(t, "openai-agents", doc.adapter())
+}
+
+func TestValidateAgentManifest_EnvelopeRequiresRuntimeAdapter(t *testing.T) {
+	const bad = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+spec:
+  adapter: opencode
+`
+	v := validateAgentManifest([]byte(bad))
+	require.False(t, v.ok())
+	joined := bytes.Join(stringSliceToBytes(v.Errors), []byte("\n"))
+	assert.Contains(t, string(joined), "spec.runtime.adapter")
+}
+
+func TestValidateAgentManifest_UnknownAdapter(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: not-a-real-adapter\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "not a known adapter")
+}
+
+func TestValidateAgentManifest_RemovedAdaptersRejected(t *testing.T) {
+	for _, adapter := range []string{"cursor", "cursor-cli"} {
+		t.Run(adapter, func(t *testing.T) {
+			v := validateAgentManifest([]byte("agent: " + adapter + "\n"))
+			require.False(t, v.ok())
+			assert.Contains(t, v.Errors[0], "not a known adapter")
+			assert.Contains(t, v.Errors[0], adapter)
+		})
+	}
+}
+
+func TestValidateAgentManifest_OpenHandsAccepted(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: openhands\ntemplate: openhands\nkeep_warm: false\n"))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	for _, w := range v.Warnings {
+		assert.NotContains(t, w, "not yet supported")
+	}
+}
+
+func TestValidateAgentManifest_UnknownAdapterErrorNamesOpenHands(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: not-a-real-adapter\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "openhands")
+}
+
+func TestValidateAgentManifest_MinimaxCodeAccepted(t *testing.T) {
+	const manifest = `agent: minimax-code
+secrets:
+  MINIMAX_API_KEY: ${MINIMAX_API_KEY}
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	for _, w := range v.Warnings {
+		assert.NotContains(t, w, "not yet supported")
+	}
+}
+
+func TestValidateAgentManifest_UnknownAdapterErrorNamesMinimaxCode(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: not-a-real-adapter\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "minimax-code")
+}
+
+func TestValidateAgentManifest_HermesAccepted(t *testing.T) {
+	const manifest = `name: hermes-smoke
+agent: hermes
+env:
+  OPENAI_MODEL: openai-gpt-4o
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	assert.Empty(t, v.Warnings)
+}
+
+// Langgraph is a supported session adapter (AGENT_KIND_LANGGRAPH). It must not
+// get the "declared but not yet supported for session create" warning that
+// still applies to openai-agents / claude-agent-sdk / crewai.
+func TestValidateAgentManifest_LanggraphAcceptedWithoutUnsupportedWarning(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: langgraph\n"))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	for _, w := range v.Warnings {
+		assert.NotContains(t, w, "not yet supported for session create")
+	}
+
+	legacy := validateAgentManifest([]byte(`apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+metadata:
+  name: lg
+spec:
+  runtime:
+    adapter: langgraph
+`))
+	assert.True(t, legacy.ok(), "errors=%v", legacy.Errors)
+	for _, w := range legacy.Warnings {
+		assert.NotContains(t, w, "not yet supported for session create")
+	}
+}
+
+func TestValidateAgentManifest_DeclaredButUnsupportedAdaptersWarn(t *testing.T) {
+	for _, adapter := range []string{"openai-agents", "claude-agent-sdk", "crewai"} {
+		t.Run(adapter, func(t *testing.T) {
+			v := validateAgentManifest([]byte("agent: " + adapter + "\n"))
+			assert.True(t, v.ok(), "errors=%v", v.Errors)
+			require.NotEmpty(t, v.Warnings)
+			assert.Contains(t, v.Warnings[0], "not yet supported for session create")
+			assert.Contains(t, v.Warnings[0], adapter)
+		})
+	}
+}
+
+func TestValidateAgentManifest_HermesWithoutModelWarns(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: hermes\n"))
+	require.True(t, v.ok(), "errors=%v", v.Errors)
+	require.Len(t, v.Warnings, 1)
+	assert.Contains(t, v.Warnings[0], "OPENAI_MODEL")
+}
+
+func TestValidateAgentManifest_CredentialPlaceholderNoWarn(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	assert.Empty(t, v.Warnings)
+}
+
+func TestValidateAgentManifest_CredentialInEnvWarns(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  OPENAI_API_KEY: sk-proj-literal
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	require.NotEmpty(t, v.Warnings)
+	assert.Contains(t, v.Warnings[0], "OPENAI_API_KEY")
+	assert.Contains(t, v.Warnings[0], "secrets")
+}
+
+func TestValidateAgentManifest_SecretSlotCollisionWarns(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  OPENAI_API_KEY: sk-proj-literal
+secrets:
+  - name: OPENAI_API_KEY
+    source: tenantSecret
+    value: sk-proj-literal
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	require.NotEmpty(t, v.Warnings)
+	assert.Contains(t, v.Warnings[0], "OPENAI_API_KEY")
+	assert.Contains(t, v.Warnings[0], "secrets")
+}
+
+func TestValidateAgentManifest_FlatSecretsMapCollisionWarns(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  OPENAI_API_KEY: placeholder
+secrets:
+  OPENAI_API_KEY: ${OPENAI_API_KEY}
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	require.NotEmpty(t, v.Warnings)
+	assert.Contains(t, v.Warnings[0], "OPENAI_API_KEY")
+}
+
+func TestReportDurableAgentManifestValidation_PromotesCredentialWarnings(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  OPENAI_API_KEY: sk-proj-literal
+`
+	err := reportDurableAgentManifestValidation(validateAgentManifest([]byte(manifest)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "OPENAI_API_KEY")
+}
+
+func TestValidateAgentManifest_ReservedEnvKey(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  SESSION_ID: custom
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "SESSION_ID")
+	assert.Contains(t, v.Errors[0], "reserved")
+}
+
+// MARSOHS-1627: NBSP-prefixed top-level keys (docs copy-paste) must fail
+// locally with an actionable message, not an opaque API contracts/ hint.
+func TestValidateAgentManifest_TopLevelKeyWhitespace(t *testing.T) {
+	manifest := "agent: opencode\n" + "\u00a0\u00a0HARNESS_INFERENCE_API_KEY: x\n"
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	joined := joinStrings(v.Errors)
+	assert.Contains(t, joined, "HARNESS_INFERENCE_API_KEY")
+	assert.Contains(t, joined, "whitespace")
+	assert.Contains(t, joined, "copy-paste")
+	assert.NotContains(t, joined, "contracts/")
+}
+
+func TestValidateAgentManifest_EnvKeyWhitespace(t *testing.T) {
+	manifest := "agent: opencode\nenv:\n  \u00a0\u00a0HARNESS_INFERENCE_API_KEY: x\n"
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	joined := joinStrings(v.Errors)
+	assert.Contains(t, joined, "env.HARNESS_INFERENCE_API_KEY")
+	assert.Contains(t, joined, "whitespace")
+}
+
+func TestValidateAgentManifest_ModelVsHarnessInferenceWarns(t *testing.T) {
+	const manifest = `agent: opencode
+env:
+  HARNESS_INFERENCE_BASE_URL: https://inference.do-ai.run/v1
+  HARNESS_INFERENCE_API_KEY: sk-test
+  MODEL: gpt-5.5
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	require.NotEmpty(t, v.Warnings)
+	joined := joinStrings(v.Warnings)
+	assert.Contains(t, joined, "HARNESS_INFERENCE_MODEL")
+}
+
+func TestValidateAgentManifest_ClaudeCodeModelKeyWarns(t *testing.T) {
+	const manifest = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+metadata:
+  name: notwork
+spec:
+  runtime:
+    adapter: claude-code
+  env:
+    MODEL: claude-opus-4-5
+    ANTHROPIC_API_KEY: sk-ant-XXX
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	joined := joinStrings(v.Warnings)
+	assert.Contains(t, joined, "ANTHROPIC_MODEL")
+	assert.Contains(t, joined, "MODEL")
+}
+
+func TestValidateAgentManifest_ClaudeCodeHarnessInferenceModel(t *testing.T) {
+	t.Run("harness group selected: no warning", func(t *testing.T) {
+		const manifest = `agent: claude-code
+env:
+  HARNESS_INFERENCE_BASE_URL: https://inference.example.com/v1
+  HARNESS_INFERENCE_MODEL: router:software-engineering
+secrets:
+  HARNESS_INFERENCE_API_KEY: do-inference-key
+`
+		v := validateAgentManifest([]byte(manifest))
+		assert.True(t, v.ok(), "errors=%v", v.Errors)
+		assert.NotContains(t, joinStrings(v.Warnings), "HARNESS_INFERENCE_MODEL")
+	})
+
+	t.Run("native key selected: HARNESS_INFERENCE_MODEL is ignored", func(t *testing.T) {
+		const manifest = `agent: claude-code
+env:
+  HARNESS_INFERENCE_MODEL: router:software-engineering
+secrets:
+  ANTHROPIC_API_KEY: sk-ant-key
+  HARNESS_INFERENCE_API_KEY: do-inference-key
+`
+		v := validateAgentManifest([]byte(manifest))
+		assert.True(t, v.ok(), "errors=%v", v.Errors)
+		joined := joinStrings(v.Warnings)
+		assert.Contains(t, joined, "HARNESS_INFERENCE_MODEL")
+		assert.Contains(t, joined, "ANTHROPIC_MODEL")
+	})
+}
+
+func TestValidateAgentManifest_InvalidPermissionsDefault(t *testing.T) {
+	const manifest = `name: validate-bug-test
+agent: codex
+secrets:
+  OPENAI_API_KEY: "sk-placeholder"
+permissions:
+  default: banana
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "permissions.default")
+	assert.Contains(t, v.Errors[0], "banana")
+	assert.Contains(t, v.Errors[0], "allow|ask|deny")
+}
+
+func TestValidateAgentManifest_PermissionsDefaultCaseSensitive(t *testing.T) {
+	for _, def := range []string{"ALLOW", "Allow", "ASK", "Deny"} {
+		t.Run(def, func(t *testing.T) {
+			manifest := fmt.Sprintf("agent: opencode\npermissions:\n  default: %s\n", def)
+			v := validateAgentManifest([]byte(manifest))
+			require.False(t, v.ok())
+			assert.Contains(t, v.Errors[0], "permissions.default")
+			assert.Contains(t, v.Errors[0], "allow|ask|deny")
+		})
+	}
+}
+
+func TestValidateAgentManifest_ValidPermissionsDefault(t *testing.T) {
+	for _, def := range []string{"allow", "ask", "deny"} {
+		t.Run(def, func(t *testing.T) {
+			manifest := fmt.Sprintf("agent: opencode\npermissions:\n  default: %s\n", def)
+			v := validateAgentManifest([]byte(manifest))
+			assert.True(t, v.ok(), "errors=%v", v.Errors)
+		})
+	}
+}
+
+func TestValidateAgentManifest_EnvelopeInvalidPermissionsDefault(t *testing.T) {
+	const manifest = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+spec:
+  runtime:
+    adapter: opencode
+  permissions:
+    default: banana
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "spec.permissions.default")
+	assert.Contains(t, v.Errors[0], "banana")
+}
+
+func TestValidateAgentManifest_InvalidSkillName(t *testing.T) {
+	const manifest = `name: validate-bug-test2
+agent: codex
+secrets:
+  OPENAI_API_KEY: "sk-placeholder"
+skills:
+  - name: Release-Checklist
+    description: Uppercase name is invalid.
+    instructions: "Test"
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "skills[0].name")
+	assert.Contains(t, v.Errors[0], "Release-Checklist")
+	assert.Contains(t, v.Errors[0], `^[a-z0-9]+(-[a-z0-9]+)*$`)
+}
+
+func TestValidateAgentManifest_InvalidSkillNameVariants(t *testing.T) {
+	cases := []string{
+		"foo--bar",
+		"-leading",
+		"trailing-",
+		"Has Spaces",
+		"under_score",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			manifest := fmt.Sprintf("agent: opencode\nskills:\n  - name: %q\n    instructions: test\n", name)
+			v := validateAgentManifest([]byte(manifest))
+			require.False(t, v.ok(), "name %q should be rejected", name)
+			assert.Contains(t, v.Errors[0], "skills[0].name")
+		})
+	}
+}
+
+func TestValidateAgentManifest_ValidSkillName(t *testing.T) {
+	const manifest = `agent: opencode
+skills:
+  - name: release-checklist
+    description: ok
+    instructions: "Test"
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_SkillInstructionsTooLarge(t *testing.T) {
+	manifest := fmt.Sprintf("agent: opencode\nskills:\n  - name: release-checklist\n    description: ok\n    instructions: %q\n",
+		strings.Repeat("a", maxSkillInstructionsBytes+1))
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "skills[0].instructions")
+	assert.Contains(t, v.Errors[0], fmt.Sprintf("%d-byte limit", maxSkillInstructionsBytes))
+}
+
+func TestValidateAgentManifest_SkillDescriptionTooLarge(t *testing.T) {
+	manifest := fmt.Sprintf("agent: opencode\nskills:\n  - name: release-checklist\n    description: %q\n    instructions: test\n",
+		strings.Repeat("a", maxSkillDescriptionBytes+1))
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "skills[0].description")
+	assert.Contains(t, v.Errors[0], fmt.Sprintf("%d-byte limit", maxSkillDescriptionBytes))
+}
+
+func TestValidateAgentManifest_SkillInstructionsAtLimitIsValid(t *testing.T) {
+	manifest := fmt.Sprintf("agent: opencode\nskills:\n  - name: release-checklist\n    description: ok\n    instructions: %q\n",
+		strings.Repeat("a", maxSkillInstructionsBytes))
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_EnvelopeInvalidSkillName(t *testing.T) {
+	const manifest = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+spec:
+  runtime:
+    adapter: opencode
+  skills:
+    - name: Bad_Name
+      instructions: test
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], "spec.skills[0].name")
+	assert.Contains(t, v.Errors[0], "Bad_Name")
+}
+
+func TestRunAgentsValidate_OK(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agent: opencode\n"), 0o600))
+
+	withTestClient(t, func(config *CmdConfig, _ *tcMocks) {
+		config.Doit.Set(config.NS, doctl.ArgAgentSpec, path)
+		var buf bytes.Buffer
+		config.Out = &buf
+		require.NoError(t, RunAgentsValidate(config))
+		assert.Contains(t, buf.String(), "Manifest looks valid")
+	})
+}
+
+func TestRunAgentsValidate_Invalid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("env:\n  FOO: bar\n"), 0o600))
+
+	withTestClient(t, func(config *CmdConfig, _ *tcMocks) {
+		config.Doit.Set(config.NS, doctl.ArgAgentSpec, path)
+		var buf bytes.Buffer
+		config.Out = &buf
+		err := RunAgentsValidate(config)
+		require.ErrorIs(t, err, ErrExitSilently)
+		out := buf.String()
+		assert.Contains(t, out, "Manifest is invalid")
+		assert.Contains(t, out, "Error")
+		assert.Contains(t, out, `"harness"`)
+	})
+}
+
+func TestRunAgentsValidate_WarningsStyled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "agent.yaml")
+	require.NoError(t, os.WriteFile(path, []byte("agent: opencode\nenv:\n  OPENAI_API_KEY: sk-proj-literal\n"), 0o600))
+
+	withTestClient(t, func(config *CmdConfig, _ *tcMocks) {
+		config.Doit.Set(config.NS, doctl.ArgAgentSpec, path)
+		var buf bytes.Buffer
+		config.Out = &buf
+		require.NoError(t, RunAgentsValidate(config))
+		out := buf.String()
+		assert.Contains(t, out, "Manifest looks valid")
+		assert.Contains(t, out, "Warning")
+		assert.Contains(t, out, "OPENAI_API_KEY")
+		assert.Contains(t, out, "Review before create")
+	})
+}
+
+func TestValidateAgentManifest_EgressOmittedOK(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: opencode\n"))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_EgressUnrestrictedOK(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: opencode\negress: unrestricted\n"))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_EgressHostListOK(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: opencode\negress:\n  - api.github.com\n  - pypi.org\n"))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_EgressObjectOK(t *testing.T) {
+	const manifest = `agent: opencode
+egress:
+  allow_hosts: [api.github.com]
+  allow_ips: ["203.0.113.10"]
+  vpc_uuid: 11111111-1111-4111-8111-111111111111
+  subnet_uuid: 22222222-2222-4222-8222-222222222222
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+}
+
+func TestValidateAgentManifest_EgressBadScalar(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: opencode\negress: open\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, v.Errors[0], `"unrestricted"`)
+	assert.Contains(t, v.Errors[0], `"none"`)
+}
+
+func TestValidateAgentManifest_EgressDenyAllOK(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress:\n"
+	tests := map[string]string{
+		"none scalar":                    "agent: opencode\negress: none\n",
+		"empty bare list":                "agent: opencode\negress: []\n",
+		"empty allow_hosts":              "agent: opencode\negress:\n  allow_hosts: []\n",
+		"empty allow_ips":                "agent: opencode\negress:\n  allow_ips: []\n",
+		"both lists empty":               "agent: opencode\negress:\n  allow_hosts: []\n  allow_ips: []\n",
+		"empty hosts with ip is ip-only": "agent: opencode\negress:\n  allow_hosts: []\n  allow_ips: [\"203.0.113.10\"]\n",
+		"legacy empty allow":             envelope + "      allow: []\n",
+		"legacy empty allowIps":          envelope + "      allowIps: []\n",
+	}
+	for name, manifest := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := validateAgentManifest([]byte(manifest))
+			assert.True(t, v.ok(), "errors=%v", v.Errors)
+		})
+	}
+}
+
+func TestValidateAgentManifest_EgressDenyAllRejectsCombinations(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress:\n"
+	const vpc = "11111111-1111-4111-8111-111111111111"
+	tests := []struct {
+		name     string
+		manifest string
+		want     string
+	}{
+		{"empty hosts with vpc", "agent: opencode\negress:\n  allow_hosts: []\n  vpc_uuid: " + vpc + "\n", "is ambiguous: drop the empty list for VPC with no ACL, or drop vpc_uuid for deny-all"},
+		{"empty ips with subnet", "agent: opencode\negress:\n  allow_ips: []\n  vpc_uuid: " + vpc + "\n  subnet_uuid: 22222222-2222-4222-8222-222222222222\n", "is ambiguous: drop the empty list for VPC with no ACL, or drop vpc_uuid for deny-all"},
+		{"legacy empty allow with vpc", envelope + "      allow: []\n      vpcUuid: " + vpc + "\n", "is ambiguous: drop the empty list for VPC with no ACL, or drop vpc_uuid for deny-all"},
+		{"legacy empty allow with unrestricted", envelope + "      allow: []\n      unrestricted: true\n", "deny-all (an empty allowlist) cannot be combined with unrestricted"},
+		{"legacy empty allow with unrestricted and subnet", envelope + "      allow: []\n      unrestricted: true\n      subnetUuid: " + vpc + "\n", "cannot be combined with unrestricted, subnetUuid"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := validateAgentManifest([]byte(tt.manifest))
+			require.False(t, v.ok())
+			assert.Contains(t, joinStrings(v.Errors), tt.want)
+		})
+	}
+}
+
+func TestValidateAgentManifest_EgressDenyAllFieldShape(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress:\n"
+
+	t.Run("legacy denyAll is rejected", func(t *testing.T) {
+		v := validateAgentManifest([]byte(envelope + "      denyAll: true\n"))
+		require.False(t, v.ok())
+		errs := joinStrings(v.Errors)
+		assert.Contains(t, errs, "denyAll: is not a manifest key; write allow: [] to block all egress")
+		assert.NotContains(t, errs, "egress: none")
+	})
+
+	t.Run("denyAll is not a flat key", func(t *testing.T) {
+		v := validateAgentManifest([]byte("agent: opencode\negress:\n  denyAll: true\n"))
+		require.False(t, v.ok())
+		errs := joinStrings(v.Errors)
+		assert.Contains(t, errs, "denyAll: is not a manifest key; write `egress: none` (or allow_hosts: []) to block all egress")
+		assert.NotContains(t, errs, "allow: []")
+	})
+}
+
+func TestValidateAgentManifest_EgressNullRejected(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress: null\n"
+	const envelopeEgress = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress:\n"
+	// `egress: none` is flat-only; legacy manifests must be told allow: [].
+	const (
+		flatFix   = "write `egress: none` to block all, or `unrestricted` / omit it"
+		legacyFix = "write allow: [] to block all, or unrestricted: true / omit it"
+	)
+	tests := []struct {
+		name     string
+		manifest string
+		want     string
+		notWant  string
+	}{
+		{"flat null egress", "agent: opencode\negress: null\n", flatFix, "allow: []"},
+		{"flat null allow_hosts", "agent: opencode\negress:\n  allow_hosts: null\n", flatFix, "allow: []"},
+		{"flat null allow_ips", "agent: opencode\negress:\n  allow_ips: null\n", flatFix, "allow: []"},
+		{"legacy null egress", envelope, legacyFix, "egress: none"},
+		{"legacy null allow", envelopeEgress + "      allow: null\n", legacyFix, "egress: none"},
+		{"legacy null allowIps", envelopeEgress + "      allowIps: null\n", legacyFix, "egress: none"},
+		{"legacy empty allow with null allowIps", envelopeEgress + "      allow: []\n      allowIps: null\n", legacyFix, "egress: none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := validateAgentManifest([]byte(tt.manifest))
+			require.False(t, v.ok())
+			errs := joinStrings(v.Errors)
+			assert.Contains(t, errs, tt.want)
+			assert.NotContains(t, errs, tt.notWant)
+		})
+	}
+}
+
+// The legacy envelope decodes egress into an object, so harness-api rejects a
+// scalar or list there; only the flat format has those forms.
+func TestValidateAgentManifest_EgressLegacyRequiresObject(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n"
+	tests := map[string]string{
+		"none scalar":         envelope + "    egress: none\n",
+		"unrestricted scalar": envelope + "    egress: unrestricted\n",
+		"host list":           envelope + "    egress:\n      - api.github.com\n",
+	}
+	for name, manifest := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := validateAgentManifest([]byte(manifest))
+			require.False(t, v.ok())
+			assert.Contains(t, joinStrings(v.Errors), "must be an object in the legacy envelope")
+		})
+	}
+}
+
+// harness-api matches the scalars exactly: no case folding, no trimming.
+func TestValidateAgentManifest_EgressScalarExactMatch(t *testing.T) {
+	for name, manifest := range map[string]string{
+		"capitalized": "agent: opencode\negress: None\n",
+		"padded":      "agent: opencode\negress: \" none \"\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			v := validateAgentManifest([]byte(manifest))
+			require.False(t, v.ok())
+			assert.Contains(t, joinStrings(v.Errors), "scalar must be")
+		})
+	}
+}
+
+// harness-api decodes legacy `unrestricted` into a bool, so a string is a 400.
+func TestValidateAgentManifest_EgressLegacyUnrestrictedMustBeBool(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress:\n"
+	v := validateAgentManifest([]byte(envelope + "      allow: []\n      unrestricted: \"true\"\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, joinStrings(v.Errors), "unrestricted: must be a boolean")
+}
+
+// subnet_uuid without vpc_uuid gets the "requires" error only; the "ambiguous"
+// message names vpc_uuid, a key the user did not write.
+func TestValidateAgentManifest_EgressEmptyListSubnetOnly(t *testing.T) {
+	const envelope = "apiVersion: agents.digitalocean.com/v1alpha1\nkind: Agent\nspec:\n  runtime:\n    adapter: opencode\n  sandbox:\n    egress:\n"
+	const subnet = "22222222-2222-4222-8222-222222222222"
+	tests := map[string]struct{ manifest, requires string }{
+		"flat":   {"agent: opencode\negress:\n  allow_hosts: []\n  subnet_uuid: " + subnet + "\n", "subnet_uuid requires"},
+		"legacy": {envelope + "      allow: []\n      subnetUuid: " + subnet + "\n", "subnetUuid requires"},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			v := validateAgentManifest([]byte(tt.manifest))
+			require.False(t, v.ok())
+			errs := joinStrings(v.Errors)
+			assert.Contains(t, errs, tt.requires)
+			assert.NotContains(t, errs, "ambiguous")
+		})
+	}
+}
+
+func TestValidateAgentManifest_EgressIPInHostList(t *testing.T) {
+	v := validateAgentManifest([]byte("agent: opencode\negress:\n  - 203.0.113.10\n"))
+	require.False(t, v.ok())
+	assert.Contains(t, joinStrings(v.Errors), "allow_ips")
+}
+
+func TestValidateAgentManifest_EgressAllowIPsRejectsCIDR(t *testing.T) {
+	const manifest = `agent: opencode
+egress:
+  allow_ips: ["203.0.113.0/24"]
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, joinStrings(v.Errors), "IPv4/IPv6 literal")
+}
+
+func TestValidateAgentManifest_EgressSubnetRequiresVPC(t *testing.T) {
+	const manifest = `agent: opencode
+egress:
+  subnet_uuid: 22222222-2222-4222-8222-222222222222
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, joinStrings(v.Errors), "subnet_uuid requires")
+}
+
+func TestValidateAgentManifest_EgressAllowIPsOnlyNoClientWarning(t *testing.T) {
+	const manifest = `agent: opencode
+egress:
+  allow_ips: ["203.0.113.10"]
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	assert.Empty(t, v.Warnings, "IP-only egress advisory is server-only (MARSOHS-1404)")
+}
+
+func TestValidateAgentManifest_EgressEnvelopeAllowIPsOnlyOK(t *testing.T) {
+	const manifest = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+spec:
+  runtime:
+    adapter: opencode
+  sandbox:
+    egress:
+      allowIps: ["203.0.113.10"]
+`
+	v := validateAgentManifest([]byte(manifest))
+	assert.True(t, v.ok(), "errors=%v", v.Errors)
+	assert.Empty(t, v.Warnings)
+}
+
+func TestValidateAgentManifest_EgressWrongFormatSpelling(t *testing.T) {
+	t.Run("flat allowIps", func(t *testing.T) {
+		const manifest = `agent: opencode
+egress:
+  allowIps: ["203.0.113.10"]
+`
+		v := validateAgentManifest([]byte(manifest))
+		require.False(t, v.ok())
+		joined := joinStrings(v.Errors)
+		assert.Contains(t, joined, "is the legacy envelope spelling")
+		assert.Contains(t, joined, "allow_ips")
+	})
+
+	t.Run("legacy allow_ips", func(t *testing.T) {
+		const manifest = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+spec:
+  runtime:
+    adapter: opencode
+  sandbox:
+    egress:
+      allow_ips: ["203.0.113.10"]
+`
+		v := validateAgentManifest([]byte(manifest))
+		require.False(t, v.ok())
+		joined := joinStrings(v.Errors)
+		assert.Contains(t, joined, "is the flat spelling")
+		assert.Contains(t, joined, "allowIps")
+	})
+
+	t.Run("flat subnetUuid", func(t *testing.T) {
+		const manifest = `agent: opencode
+egress:
+  vpc_uuid: 11111111-1111-4111-8111-111111111111
+  subnetUuid: 22222222-2222-4222-8222-222222222222
+`
+		v := validateAgentManifest([]byte(manifest))
+		require.False(t, v.ok())
+		joined := joinStrings(v.Errors)
+		assert.Contains(t, joined, "subnetUuid")
+		assert.Contains(t, joined, "subnet_uuid")
+	})
+
+	t.Run("allowHosts unknown field", func(t *testing.T) {
+		const manifest = `agent: opencode
+egress:
+  allowHosts: [api.github.com]
+`
+		v := validateAgentManifest([]byte(manifest))
+		require.False(t, v.ok())
+		joined := joinStrings(v.Errors)
+		assert.Contains(t, joined, "allowHosts: unknown field")
+		assert.NotContains(t, joined, "legacy envelope spelling")
+		assert.NotContains(t, joined, "flat spelling")
+	})
+}
+
+func TestValidateAgentManifest_EgressEnvelopePath(t *testing.T) {
+	const manifest = `apiVersion: agents.digitalocean.com/v1alpha1
+kind: Agent
+spec:
+  runtime:
+    adapter: opencode
+  sandbox:
+    egress: open
+`
+	v := validateAgentManifest([]byte(manifest))
+	require.False(t, v.ok())
+	assert.Contains(t, joinStrings(v.Errors), "spec.sandbox.egress")
+}
+
+func stringSliceToBytes(ss []string) [][]byte {
+	out := make([][]byte, len(ss))
+	for i, s := range ss {
+		out[i] = []byte(s)
+	}
+	return out
+}
+
+func joinStrings(ss []string) string {
+	return string(bytes.Join(stringSliceToBytes(ss), []byte("\n")))
+}

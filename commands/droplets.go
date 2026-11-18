@@ -21,14 +21,21 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/commands/displayers"
 	"github.com/digitalocean/doctl/do"
 	"github.com/digitalocean/godo"
 	"github.com/gobwas/glob"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 )
+
+// dropletPollInterval is how often a Droplet is re-read while it boots. A
+// Droplet is usually active within a minute, so this is quicker than the
+// intervals used for resources that provision for several minutes.
+const dropletPollInterval = 5 * time.Second
 
 // Droplet creates the droplet command.
 func Droplet() *Command {
@@ -67,32 +74,59 @@ func Droplet() *Command {
 
 	dropletCreateLongDesc := `Creates a new Droplet on your account. The command requires values for the ` + "`" + `--size` + "`" + `, and ` + "`" + `--image` + "`" + ` flags.
 
-To retrieve a list of size slugs, use the ` + "`" + `doctl compute size list` + "`" + ` command. To retrieve a list of image slugs, use the ` + "`" + `doctl compute image list` + "`" + ` command.
+To retrieve a list of size slugs, use the ` + "`" + `doctl compute size list` + "`" + ` command. To retrieve a list of image slugs, use the ` + "`" + `doctl compute image list-distribution` + "`" + ` command for public distribution images, or ` + "`" + `doctl compute image list` + "`" + ` for images on your account. To retrieve a list of region slugs, use the ` + "`" + `doctl compute region list` + "`" + ` command.
 
 If you do not specify a region, the Droplet is created in the default region for your account. If you do not specify any SSH keys, we email a temporary password to your account's email address.`
 
 	cmdDropletCreate := CmdBuilder(cmd, RunDropletCreate, "create <droplet-name>...", "Create a new Droplet", dropletCreateLongDesc, Writer,
 		aliasOpt("c"), displayerType(&displayers.Droplet{}))
 	AddStringSliceFlag(cmdDropletCreate, doctl.ArgSSHKeys, "", []string{}, "A list of SSH key IDs or fingerprints to embed in the Droplet's root account upon creation")
-	AddStringFlag(cmdDropletCreate, doctl.ArgUserData, "", "", "A shell script to run on the Droplet's first boot")
-	AddStringFlag(cmdDropletCreate, doctl.ArgUserDataFile, "", "", "The path to a file containing a shell script or Cloud-init YAML file to run on the Droplet's first boot. Example: `path/to/file.yaml`")
-	AddBoolFlag(cmdDropletCreate, doctl.ArgCommandWait, "", false, "Instructs the terminal to wait for the action to complete before returning access to the user")
-	AddStringFlag(cmdDropletCreate, doctl.ArgRegionSlug, "", "", "A slug specifying the region to create the Droplet in, such as `nyc1`. Use the `doctl compute region list` command for a list of valid regions.")
-	AddStringFlag(cmdDropletCreate, doctl.ArgSizeSlug, "", "", "A slug indicating the Droplet's number of vCPUs, RAM, and disk size. For example, `s-1vcpu-1gb` specifies a Droplet with one vCPU and 1 GiB of RAM. The disk size is defined by the slug's plan. Run `doctl compute size list` for a list of valid size slugs and their disk sizes.",
-		requiredOpt())
-	AddBoolFlag(cmdDropletCreate, doctl.ArgBackups, "", false, "Enables backups for the Droplet. Backups are created on a weekly basis.")
+	AddStringFlag(cmdDropletCreate, doctl.ArgUserData, "", "", "A shell script to run on the Droplet's first boot",
+		flagPurpose("Inline user-data script run on first boot"),
+		flagHint("Use either --user-data or --user-data-file, not both"))
+	AddStringFlag(cmdDropletCreate, doctl.ArgUserDataFile, "", "", "The path to a file containing a shell script or Cloud-init YAML file to run on the Droplet's first boot. Example: `path/to/file.yaml`",
+		flagPurpose("Path to a user-data / cloud-init file run on first boot"),
+		flagHint("Use either --user-data or --user-data-file, not both"))
+	cmdDropletCreate.MarkFlagsMutuallyExclusive(doctl.ArgUserData, doctl.ArgUserDataFile)
+	AddWaitFlags(cmdDropletCreate, false, "Instructs the terminal to wait for the action to complete before returning access to the user")
+	AddStringFlag(cmdDropletCreate, doctl.ArgRegionSlug, "", "", "A `slug` specifying the region to create the Droplet in, such as `nyc1`. Use the `doctl compute region list` command for a list of valid regions.",
+		flagPurpose("Region where the Droplet is created"),
+		flagHint("run doctl compute region list"))
+	AddStringFlag(cmdDropletCreate, doctl.ArgSizeSlug, "", "", "A `slug` indicating the Droplet's number of vCPUs, RAM, and disk size. For example, `s-1vcpu-1gb` specifies a Droplet with one vCPU and 1 GiB of RAM. The disk size is defined by the slug's plan. Run `doctl compute size list` for a list of valid size slugs and their disk sizes.",
+		requiredOpt(),
+		flagPurpose("Droplet size (vCPUs, RAM, and disk)"),
+		flagHint("run doctl compute size list"))
+	AddBoolFlag(cmdDropletCreate, doctl.ArgBackups, "", false, "Enables backups for the Droplet. By default, backups are created on a daily basis.")
+	// Backup policy flags are intentionally not MarkFlagsRequiredTogether:
+	// weekday is only needed for weekly plans, and hour defaults to 0 when omitted
+	// (see readDropletBackupPolicy).
+	AddStringFlag(cmdDropletCreate, doctl.ArgDropletBackupPolicyPlan, "", "", `Backup policy frequency plan.`,
+		flagPurpose("Backup frequency plan"),
+		flagHint("for weekly plans also set --backup-policy-weekday; --backup-policy-hour defaults to 0"))
+	AddStringFlag(cmdDropletCreate, doctl.ArgDropletBackupPolicyWeekday, "", "", `Backup policy weekday.`,
+		flagPurpose("Weekday for the backup window (weekly plans)"),
+		flagHint("required when --backup-policy-plan is weekly"))
+	AddIntFlag(cmdDropletCreate, doctl.ArgDropletBackupPolicyHour, "", 0, `Backup policy hour.`,
+		flagPurpose("Hour of day for the backup window"),
+		flagHint("optional; defaults to 0 when omitted"))
 	AddBoolFlag(cmdDropletCreate, doctl.ArgIPv6, "", false, "Enables IPv6 support and assigns an IPv6 address to the Droplet")
 	AddBoolFlag(cmdDropletCreate, doctl.ArgPrivateNetworking, "", false, "Enables private networking for the Droplet by provisioning it inside of your account's default VPC for the region")
+
+	AddBoolFlag(cmdDropletCreate, doctl.ArgPublicNetworking, "", true, "Enables public networking for the Droplet. By default, this is always enabled on new droplets, but by explicitly setting it to false, you can create a droplet with public networking entirely disabled.")
+
 	AddBoolFlag(cmdDropletCreate, doctl.ArgMonitoring, "", false, "Installs the DigitalOcean agent for additional monitoring")
 	AddStringFlag(cmdDropletCreate, doctl.ArgImage, "", "", "An ID or slug specifying the image to use to create the Droplet, such as `ubuntu-20-04-x64`. Use the commands under `doctl compute image` to find additional images.",
-		requiredOpt())
+		requiredOpt(),
+		flagPurpose("Image ID or slug used to create the Droplet"),
+		flagHint("run doctl compute image list-distribution"))
 	AddStringFlag(cmdDropletCreate, doctl.ArgTagName, "", "", "Applies a tag to the Droplet")
 	AddStringFlag(cmdDropletCreate, doctl.ArgVPCUUID, "", "", "The UUID of a non-default VPC to create the Droplet in")
 	AddStringFlag(cmdDropletCreate, doctl.ArgProjectID, "", "", "The UUID of the project to assign the Droplet to")
 	AddStringSliceFlag(cmdDropletCreate, doctl.ArgTagNames, "", []string{}, "Applies a list of tags to the Droplet")
 	AddBoolFlag(cmdDropletCreate, doctl.ArgDropletAgent, "", false, "Specifies whether or not the Droplet monitoring agent should be installed. By default, the agent is installed on new Droplets but installation errors are ignored. Set `--droplet-agent=false` to prevent installation. Set to `true` to make installation errors fatal.")
-	AddStringSliceFlag(cmdDropletCreate, doctl.ArgVolumeList, "", []string{}, "A list of block storage volume IDs to attach to the Droplet")
-	cmdDropletCreate.Example = `The following example creates a Droplet named ` + "`" + `example-droplet` + "`" + ` with a two vCPUs, two GiB of RAM, and 20 GBs of disk space. The Droplet is created in the ` + "`" + `nyc1` + "`" + ` region and is based on the ` + "`" + `ubuntu-20-04-x64` + "`" + ` image. Additionally, the command uses the ` + "`" + `--user-data` + "`" + ` flag to run a Bash script the first time the Droplet boots up: doctl compute droplet create example-droplet --size s-2vcpu-2gb --image ubuntu-20-04-x64 --region nyc1 --user-data $'#!/bin/bash\n touch /root/example.txt; sudo apt update;sudo snap install doctl'`
+	AddStringSliceFlag(cmdDropletCreate, doctl.ArgVolumeList, "", []string{}, "A list of block storage volume IDs to attach to the Droplet",
+		flagHint("run doctl compute volume list"))
+	cmdDropletCreate.Example = `The following example creates a Droplet named ` + "`" + `example-droplet` + "`" + ` with a two vCPUs, two GiB of RAM, and 20 GBs of disk space. The Droplet is created in the ` + "`" + `nyc1` + "`" + ` region and is based on the ` + "`" + `ubuntu-20-04-x64` + "`" + ` image. Additionally, the command uses the ` + "`" + `--user-data` + "`" + ` flag to run a Bash script the first time the Droplet boots up:` + "\n\n" + `doctl compute droplet create example-droplet --size s-2vcpu-2gb --image ubuntu-20-04-x64 --region nyc1 --user-data $'#!/bin/bash\n touch /root/example.txt; sudo apt update;sudo snap install doctl'` + "\n\n" + "Please note: In Windows Powershell, the example command would be the following instead: " + "\n\n" + "doctl compute droplet create example-droplet --size s-2vcpu-2gb --image ubuntu-20-04-x64 --region nyc1  --user-data \"#!/bin/bash`n touch /root/example.txt; sudo apt update;sudo snap install doctl\""
 
 	cmdRunDropletDelete := CmdBuilder(cmd, RunDropletDelete, "delete <droplet-id|droplet-name>...", "Permanently delete a Droplet", `Permanently deletes a Droplet. This is irreversible.`, Writer,
 		aliasOpt("d", "del", "rm"))
@@ -113,6 +147,7 @@ If you do not specify a region, the Droplet is created in the default region for
 		aliasOpt("ls"), displayerType(&displayers.Droplet{}))
 	AddStringFlag(cmdRunDropletList, doctl.ArgRegionSlug, "", "", "Retrieves a list of Droplets in a specified region")
 	AddStringFlag(cmdRunDropletList, doctl.ArgTagName, "", "", "Retrieves a list of Droplets with the specified tag name")
+	AddBoolFlag(cmdRunDropletList, doctl.ArgGPUs, "", false, "List GPU Droplets only. By default, only non-GPU Droplets are returned.")
 	cmdRunDropletList.Example = `The following example retrieves a list of all Droplets in the ` + "`" + `nyc1` + "`" + ` region: doctl compute droplet list --region nyc1`
 
 	cmdDropletNeighbors := CmdBuilder(cmd, RunDropletNeighbors, "neighbors <droplet-id>", "List a Droplet's neighbors on your account", `Lists your Droplets that are on the same physical hardware, including the following details:`+dropletDetails, Writer,
@@ -133,6 +168,7 @@ If you do not specify a region, the Droplet is created in the default region for
 	cmdRunDropletUntag.Example = `The following example removes the tag ` + "`" + `frontend` + "`" + ` from a Droplet with the ID ` + "`" + `386734086` + "`" + `: doctl compute droplet untag 386734086 --tag-name frontend`
 
 	cmd.AddCommand(dropletOneClicks())
+	cmd.AddCommand(dropletBackupPolicies())
 
 	return cmd
 }
@@ -196,12 +232,22 @@ func RunDropletCreate(c *CmdConfig) error {
 		return err
 	}
 
+	backupPolicy, err := readDropletBackupPolicy(c)
+	if err != nil {
+		return err
+	}
+
 	ipv6, err := c.Doit.GetBool(c.NS, doctl.ArgIPv6)
 	if err != nil {
 		return err
 	}
 
 	privateNetworking, err := c.Doit.GetBool(c.NS, doctl.ArgPrivateNetworking)
+	if err != nil {
+		return err
+	}
+
+	publicNetworking, err := c.Doit.GetBoolPtr(c.NS, doctl.ArgPublicNetworking)
 	if err != nil {
 		return err
 	}
@@ -234,6 +280,13 @@ func RunDropletCreate(c *CmdConfig) error {
 	projectUUID, err := c.Doit.GetString(c.NS, doctl.ArgProjectID)
 	if err != nil {
 		return err
+	}
+
+	if projectUUID != "" {
+		err := ValidateProjectUUID(c, projectUUID)
+		if err != nil {
+			return err
+		}
 	}
 
 	tagNames, err := c.Doit.GetStringSlice(c.NS, doctl.ArgTagNames)
@@ -287,9 +340,12 @@ func RunDropletCreate(c *CmdConfig) error {
 	ds := c.Droplets()
 
 	var wg sync.WaitGroup
-	var createdList do.Droplets
+	// Results are written by index rather than appended so that concurrent
+	// creates do not race, and so that output follows the order the names
+	// were given on the command line.
+	created := make([]*do.Droplet, len(c.Args))
 	errs := make(chan error, len(c.Args))
-	for _, name := range c.Args {
+	for i, name := range c.Args {
 		dcr := &godo.DropletCreateRequest{
 			Name:              name,
 			Region:            region,
@@ -297,8 +353,10 @@ func RunDropletCreate(c *CmdConfig) error {
 			Image:             createImage,
 			Volumes:           volumes,
 			Backups:           backups,
+			BackupPolicy:      backupPolicy,
 			IPv6:              ipv6,
 			PrivateNetworking: privateNetworking,
+			PublicNetworking:  publicNetworking,
 			Monitoring:        monitoring,
 			SSHKeys:           sshKeys,
 			UserData:          userData,
@@ -314,20 +372,18 @@ func RunDropletCreate(c *CmdConfig) error {
 		go func() {
 			defer wg.Done()
 
-			d, err := ds.Create(dcr, wait)
+			d, err := ds.Create(dcr)
 			if err != nil {
 				errs <- err
 				return
 			}
 
-			createdList = append(createdList, *d)
+			created[i] = d
 		}()
 	}
 
 	wg.Wait()
 	close(errs)
-
-	item := &displayers.Droplet{Droplets: createdList}
 
 	for err := range errs {
 		if err != nil {
@@ -335,13 +391,127 @@ func RunDropletCreate(c *CmdConfig) error {
 		}
 	}
 
+	createdList := make(do.Droplets, 0, len(created))
+	for _, d := range created {
+		if d != nil {
+			createdList = append(createdList, *d)
+		}
+	}
+
+	// Assignment happens as soon as the Droplets exist, before any wait: a
+	// Droplet belongs to a project from the moment it is created, and waiting
+	// first would mean a wait that timed out left Droplets running outside the
+	// project the user asked for, with nothing recording that it was asked.
 	for _, createdDroplet := range createdList {
 		if err := c.moveToProject(projectUUID, createdDroplet); err != nil {
 			return err
 		}
 	}
 
-	return c.Display(item)
+	if wait {
+		w, err := newWaiter(c)
+		if err != nil {
+			return err
+		}
+
+		var waitErr error
+		createdList, waitErr = waitForActiveDroplets(w, ds, createdList)
+		if waitErr != nil {
+			// The Droplets exist whether or not they reached active, so they
+			// are shown before the failure is reported: their IDs are the only
+			// handle the user has on a wait that timed out.
+			if err := c.Display(&displayers.Droplet{Droplets: createdList}); err != nil {
+				return err
+			}
+
+			return waitErr
+		}
+	}
+
+	return c.Display(&displayers.Droplet{Droplets: createdList})
+}
+
+// waitForActiveDroplets polls until every Droplet is active, then returns them
+// re-read so that the network addresses assigned during boot are displayed.
+//
+// A single wait covers the whole batch: creating several Droplets at once is
+// one operation from the user's point of view, and one progress line is far
+// easier to follow than a spinner per Droplet competing for the same terminal.
+func waitForActiveDroplets(w waiter, ds do.DropletsService, droplets do.Droplets) (do.Droplets, error) {
+	const wantStatus = "active"
+
+	if len(droplets) == 0 {
+		return droplets, nil
+	}
+
+	heading := "Creating Droplet"
+	activity := fmt.Sprintf("Creating Droplet (%s)", droplets[0].Name)
+	subject := fmt.Sprintf("Droplet (%s) to become active", droplets[0].Name)
+	success := fmt.Sprintf("Droplet (%s) is active", droplets[0].Name)
+	if len(droplets) > 1 {
+		heading = fmt.Sprintf("Creating %d Droplets", len(droplets))
+		activity = fmt.Sprintf("Creating %d Droplets", len(droplets))
+		subject = fmt.Sprintf("%d Droplets to become active", len(droplets))
+		success = fmt.Sprintf("%d Droplets are active", len(droplets))
+	}
+
+	active := make(do.Droplets, len(droplets))
+	// A Droplet that has reached active is not re-read on later passes, so a
+	// large batch does not keep paying for Droplets that are already up.
+	settled := make([]bool, len(droplets))
+
+	err := w.wait(waitOp{
+		Heading:  heading,
+		Activity: activity,
+		Subject:  subject,
+		Success:  success,
+		Interval: dropletPollInterval,
+	}, func() (bool, string, error) {
+		ready := 0
+
+		for i, d := range droplets {
+			if settled[i] {
+				ready++
+				continue
+			}
+
+			current, err := ds.Get(d.ID)
+			if err != nil {
+				return false, "", err
+			}
+
+			active[i] = *current
+			if current.Status == wantStatus {
+				settled[i] = true
+				ready++
+			}
+		}
+
+		// A count is worth the width only once there is more than one Droplet
+		// to count: "0 of 1 active" alongside "Creating Droplet (web-01)" is
+		// the same sentence twice.
+		detail := ""
+		if len(droplets) > 1 {
+			detail = fmt.Sprintf("%d of %d active", ready, len(droplets))
+		}
+
+		return ready == len(droplets), detail, nil
+	})
+	if err != nil {
+		return droplets, err
+	}
+
+	return active, nil
+}
+
+// ValidateProjectUUID checks if the given projectUUID exists
+func ValidateProjectUUID(c *CmdConfig, projectUUID string) error {
+	if _, err := uuid.Parse(projectUUID); err != nil {
+		return fmt.Errorf("Invalid Project UUID - %w", err)
+	}
+	ps := c.Projects()
+	_, err := ps.Get(projectUUID)
+	return err
 }
 
 // RunDropletTag adds a tag to a droplet.
@@ -521,25 +691,25 @@ func RunDropletDelete(c *CmdConfig) error {
 			resourceType = "Droplets"
 		}
 
-		if force || AskForConfirm(fmt.Sprintf("delete %d %s tagged \"%s\"? [affected %s: %s]", len(list), resourceType, tagName, resourceType, affectedIDs)) == nil {
-			return ds.DeleteByTag(tagName)
+		if err := confirmAction(force, fmt.Sprintf("delete %d %s tagged \"%s\"? [affected %s: %s]", len(list), resourceType, tagName, resourceType, affectedIDs)); err != nil {
+			return err
 		}
-		return errOperationAborted
+		return ds.DeleteByTag(tagName)
 	}
 
-	if force || AskForConfirmDelete("Droplet", len(c.Args)) == nil {
+	if err := confirmDelete(force, "Droplet", len(c.Args)); err != nil {
+		return err
+	}
 
-		fn := func(ids []int) error {
-			for _, id := range ids {
-				if err := ds.Delete(id); err != nil {
-					return fmt.Errorf("Unable to delete Droplet %d: %v", id, err)
-				}
+	fn := func(ids []int) error {
+		for _, id := range ids {
+			if err := ds.Delete(id); err != nil {
+				return fmt.Errorf("Unable to delete Droplet %d: %w", id, err)
 			}
-			return nil
 		}
-		return matchDroplets(c.Args, ds, fn)
+		return nil
 	}
-	return errOperationAborted
+	return matchDroplets(c.Args, ds, fn)
 }
 
 type matchDropletsFn func(ids []int) error
@@ -656,6 +826,15 @@ func RunDropletList(c *CmdConfig) error {
 		return err
 	}
 
+	gpus, err := c.Doit.GetBool(c.NS, doctl.ArgGPUs)
+	if err != nil {
+		return err
+	}
+
+	if gpus && tagName != "" {
+		return fmt.Errorf("The --gpus and --tag-name flags are mutually exclusive.")
+	}
+
 	matches := make([]glob.Glob, 0, len(c.Args))
 	for _, globStr := range c.Args {
 		g, err := glob.Compile(globStr)
@@ -669,7 +848,9 @@ func RunDropletList(c *CmdConfig) error {
 	var matchedList do.Droplets
 
 	var list do.Droplets
-	if tagName == "" {
+	if gpus {
+		list, err = ds.ListWithGPUs()
+	} else if tagName == "" {
 		list, err = ds.List()
 	} else {
 		list, err = ds.ListByTag(tagName)
@@ -776,6 +957,30 @@ func buildDropletSummary(ds do.DropletsService) (*dropletSummary, error) {
 	return &sum, nil
 }
 
+// dropletBackupPolicies creates the backup-policies command subtree.
+func dropletBackupPolicies() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:   "backup-policies",
+			Short: "Display commands for Droplet's backup policies.",
+			Long:  "The commands under `doctl compute droplet backup-policies` are for displaying the commands for Droplet's backup policies.",
+		},
+	}
+
+	cmdDropletGetBackupPolicy := CmdBuilder(cmd, RunDropletGetBackupPolicy, "get <droplet-id>", "Get droplet's backup policy", `Retrieves a backup policy of a Droplet.`, Writer,
+		displayerType(&displayers.DropletBackupPolicy{}))
+	cmdDropletGetBackupPolicy.Example = `The following example retrieves a backup policy for a Droplet with the ID ` + "`" + `386734086` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to only return the Droplet's id and backup policy plan: doctl compute droplet backup-policies get 386734086 --format DropletID,BackupPolicyPlan`
+	AddStringFlag(cmdDropletGetBackupPolicy, doctl.ArgTemplate, "", "", "Go template format. Sample values: ```{{.DropletID}}`, `{{.BackupEnabled}}`, `{{.BackupPolicy.Plan}}`, `{{.BackupPolicy.Weekday}}`, `{{.BackupPolicy.Hour}}`, `{{.BackupPolicy.Plan}}`, `{{.BackupPolicy.WindowLengthHours}}`, `{{.BackupPolicy.RetentionPeriodDays}}`, `{{.NextBackupWindow.Start}}`, `{{.NextBackupWindow.End}}`")
+
+	cmdDropletListBackupPolicies := CmdBuilder(cmd, RunDropletListBackupPolicies, "list", "List backup policies for all Droplets", `List droplet backup policies for all existing Droplets.`, Writer, aliasOpt("ls"))
+	cmdDropletListBackupPolicies.Example = `The following example list backup policies for all existing Droplets: doctl compute droplet backup-policies list`
+
+	cmdDropletListSupportedBackupPolicies := CmdBuilder(cmd, RunDropletListSupportedBackupPolicies, "list-supported", "List of all supported droplet backup policies", `List of all supported droplet backup policies.`, Writer)
+	cmdDropletListSupportedBackupPolicies.Example = `The following example list all supported backup policies for Droplets: doctl compute droplet backup-policies list-supported`
+
+	return cmd
+}
+
 // kubernetesOneClicks creates the 1-click command.
 func dropletOneClicks() *Command {
 	cmd := &Command{
@@ -805,5 +1010,64 @@ func RunDropletOneClickList(c *CmdConfig) error {
 
 	items := &displayers.OneClick{OneClicks: oneClickList}
 
+	return c.Display(items)
+}
+
+// RunDropletGetBackupPolicy retrieves a backup policy for a Droplet.
+func RunDropletGetBackupPolicy(c *CmdConfig) error {
+	ds := c.Droplets()
+
+	id, err := getDropletIDArg(c.NS, c.Args)
+	if err != nil {
+		return err
+	}
+
+	policy, err := ds.GetBackupPolicy(id)
+	if err != nil {
+		return err
+	}
+
+	item := &displayers.DropletBackupPolicy{DropletBackupPolicies: []do.DropletBackupPolicy{*policy}}
+
+	getTemplate, err := c.Doit.GetString(c.NS, doctl.ArgTemplate)
+	if err != nil {
+		return err
+	}
+
+	if getTemplate != "" {
+		t := template.New("Get template")
+		t, err = t.Parse(getTemplate)
+		if err != nil {
+			return err
+		}
+		return t.Execute(c.Out, policy)
+	}
+
+	return c.Display(item)
+}
+
+// RunDropletListBackupPolicies list backup policies for all existing Droplets.
+func RunDropletListBackupPolicies(c *CmdConfig) error {
+	ds := c.Droplets()
+
+	policies, err := ds.ListBackupPolicies()
+	if err != nil {
+		return err
+	}
+
+	items := &displayers.DropletBackupPolicy{DropletBackupPolicies: policies}
+	return c.Display(items)
+}
+
+// RunDropletListSupportedBackupPolicies list all supported backup policies for Droplets.
+func RunDropletListSupportedBackupPolicies(c *CmdConfig) error {
+	ds := c.Droplets()
+
+	policies, err := ds.ListSupportedBackupPolicies()
+	if err != nil {
+		return err
+	}
+
+	items := &displayers.DropletSupportedBackupPolicy{DropletSupportedBackupPolicies: policies}
 	return c.Display(items)
 }

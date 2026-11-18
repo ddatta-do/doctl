@@ -36,6 +36,7 @@ func (lb *LoadBalancer) Cols() []string {
 	return []string{
 		"ID",
 		"IP",
+		"IPv6",
 		"Name",
 		"Status",
 		"Created",
@@ -43,12 +44,14 @@ func (lb *LoadBalancer) Cols() []string {
 		"Size",
 		"SizeUnit",
 		"VPCUUID",
+		"SubnetUUID",
 		"Tag",
 		"DropletIDs",
 		"RedirectHttpToHttps",
 		"StickySessions",
 		"HealthCheck",
 		"ForwardingRules",
+		"Firewall",
 		"DisableLetsEncryptDNSRecords",
 	}
 }
@@ -57,6 +60,7 @@ func (lb *LoadBalancer) ColMap() map[string]string {
 	return map[string]string{
 		"ID":                           "ID",
 		"IP":                           "IP",
+		"IPv6":                         "IPv6",
 		"Name":                         "Name",
 		"Status":                       "Status",
 		"Created":                      "Created At",
@@ -64,12 +68,14 @@ func (lb *LoadBalancer) ColMap() map[string]string {
 		"Size":                         "Size",
 		"SizeUnit":                     "Size Unit",
 		"VPCUUID":                      "VPC UUID",
+		"SubnetUUID":                   "Subnet UUID",
 		"Tag":                          "Tag",
 		"DropletIDs":                   "Droplet IDs",
 		"RedirectHttpToHttps":          "SSL",
 		"StickySessions":               "Sticky Sessions",
 		"HealthCheck":                  "Health Check",
 		"ForwardingRules":              "Forwarding Rules",
+		"Firewall":                     "Firewall Rules",
 		"DisableLetsEncryptDNSRecords": "Disable Lets Encrypt DNS Records",
 	}
 }
@@ -86,10 +92,12 @@ func (lb *LoadBalancer) KV() []map[string]any {
 		o := map[string]any{
 			"ID":                           l.ID,
 			"IP":                           l.IP,
+			"IPv6":                         l.IPv6,
 			"Name":                         l.Name,
 			"Status":                       l.Status,
 			"Created":                      l.Created,
 			"VPCUUID":                      l.VPCUUID,
+			"SubnetUUID":                   l.VPCSubnetUUID,
 			"Tag":                          l.Tag,
 			"DropletIDs":                   strings.Trim(strings.Replace(fmt.Sprint(l.DropletIDs), " ", ",", -1), "[]"),
 			"RedirectHttpToHttps":          l.RedirectHttpToHttps,
@@ -106,6 +114,9 @@ func (lb *LoadBalancer) KV() []map[string]any {
 		}
 		if l.SizeUnit > 0 {
 			o["SizeUnit"] = l.SizeUnit
+		}
+		if l.Firewall != nil {
+			o["Firewall"] = prettyPrintStruct(l.Firewall)
 		}
 		out = append(out, o)
 	}
@@ -133,6 +144,10 @@ func prettyPrintStruct(obj any) string {
 	for i := 0; i < numField; i++ {
 		k := strings.Split(val.Type().Field(i).Tag.Get("json"), ",")[0]
 		v := reflect.ValueOf(val.Field(i).Interface())
+
+		// Rendered as fmt sees it, unset fields included. formatCell decides
+		// how a nil is spelled, so that the choice is made once and only for
+		// the streams a person reads.
 		output = append(output, fmt.Sprintf("%v:%v", k, v))
 	}
 

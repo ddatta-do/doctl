@@ -18,11 +18,19 @@ Options:
   -i, --image  snap image version
   -b, --branch branch only
   -c, --commit commit only
-  --snap, returns the version formated for a snap release
+  --snap, returns the version formatted for a snap release
 "
 
 semver() {
-  git tag -l | sort --version-sort | tail -n1 | cut -c 2-
+  # Prefer the latest GA tag (vX.Y.Z). Beta tags must not be reported as
+  # "latest" so callers like snap/snapcraft.yaml and scripts/_build.sh keep
+  # producing GA-based versions while a beta line is in flight.
+  local v
+  v="$(git tag -l | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort --version-sort | tail -n1 | cut -c 2-)"
+  if [[ -z "$v" ]]; then
+    v="$(git tag -l | sort --version-sort | tail -n1 | cut -c 2-)"
+  fi
+  echo "$v"
 }
 
 branch() {

@@ -1,0 +1,262 @@
+package commands
+
+import (
+	"strings"
+
+	"github.com/digitalocean/doctl"
+	"github.com/digitalocean/doctl/commands/displayers"
+	"github.com/digitalocean/godo"
+	"github.com/spf13/cobra"
+)
+
+func VPCNATGateway() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:     "vpc-nat-gateway",
+			Aliases: []string{"vng"},
+			Short:   "Display commands to manage VPC NAT Gateways",
+			Long: `Use the subcommands of ` + "`" + `doctl compute vpc-nat-gateway` + "`" + ` to perform actions on VPC NAT Gateways.
+
+You can use vpc-nat-gateway to perform CRUD operations on a VPC NAT Gateway.`,
+		},
+	}
+
+	cmdVPCNATGatewayCreate := CmdBuilder(cmd, RunVPCNATGatewayCreate, "create", "Create a new VPC NAT Gateway", "", Writer, displayerType(&displayers.VPCNATGateways{}), aliasOpt("c"))
+
+	cmdVPCNATGatewayUpdate := CmdBuilder(cmd, RunVPCNATGatewayUpdate, "update <gateway-id>", "Update an active VPC NAT Gateway", "", Writer, displayerType(&displayers.VPCNATGateways{}), aliasOpt("u"))
+
+	for _, c := range []*Command{
+		cmdVPCNATGatewayCreate,
+		cmdVPCNATGatewayUpdate,
+	} {
+		AddStringFlag(c, doctl.ArgVPCNATGatewayName, "", "", "Name of the VPC NAT Gateway", requiredOpt())
+		AddStringFlag(c, doctl.ArgVPCNATGatewayType, "", "PUBLIC", "Gateway type")
+		AddStringFlag(c, doctl.ArgVPCNATGatewayRegion, "", "", "Gateway region", requiredOpt())
+		AddIntFlag(c, doctl.ArgVPCNATGatewaySize, "", 1, "Gateway size")
+		AddStringSliceFlag(c, doctl.ArgVPCNATGatewayVPCs, "", []string{}, "Ingress VPCs, takes a kv-pair of Ingress VPC ID and optional 'default' to indicate the gateway to be set as default for the VPC,"+
+			" and an optional subnet UUID to restrict the gateway to a specific subnet of the VPC"+
+			" (e.g. --vpcs 6df2c5f4-d2da-4bce-b8dc-e9d2b7bd5db6:default,abcd8994-7f1b-4512-bc2e-13d47ca68632:3d6f6fdc-8b7e-49fd-a3c2-0d73ec4e40b4)"+
+			" (NOTE: specifying a subnet UUID is in private preview, contact DigitalOcean support to review its public availability.)")
+		AddIntFlag(c, doctl.ArgVPCNATGatewayUDPTimeout, "", 30, "UDP connection timeout (seconds)")
+		AddIntFlag(c, doctl.ArgVPCNATGatewayICMPTimeout, "", 30, "ICMP connection timeout (seconds)")
+		AddIntFlag(c, doctl.ArgVPCNATGatewayTCPTimeout, "", 300, "TCP connection timeout (seconds)")
+	}
+
+	AddStringFlag(cmdVPCNATGatewayCreate, doctl.ArgProjectID, "", "",
+		"Indicates which project to associate the VPC NAT Gateway with. If not specified, the VPC NAT Gateway will be placed in your default project.")
+	AddStringFlag(cmdVPCNATGatewayCreate, doctl.ArgVPCNATGatewayIP, "", "",
+		"An optional BYOIP address to assign as the public egress IP. Must be an unassigned BYOIP on your account in the same region. When omitted, a system-allocated reserved IP is provisioned.")
+
+	CmdBuilder(cmd, RunVPCNATGatewayGet, "get <gateway-id>", "Get a VPC NAT Gateway", "", Writer, displayerType(&displayers.VPCNATGateways{}))
+
+	CmdBuilder(cmd, RunVPCNATGatewayList, "list", "List all active VPC NAT Gateways", "", Writer, displayerType(&displayers.VPCNATGateways{}), aliasOpt("ls"))
+
+	cmdVPCNATGatewayDelete := CmdBuilder(cmd, RunVPCNATGatewayDelete, "delete <gateway-id>", "Delete a VPC NAT Gateway", "", Writer, aliasOpt("d", "rm"))
+	AddBoolFlag(cmdVPCNATGatewayDelete, doctl.ArgForce, "", false, "Force delete without a confirmation prompt")
+
+	return cmd
+}
+
+type requestType int
+
+const (
+	createRequestType requestType = iota + 1
+	updateRequestType
+)
+
+func buildVPCNATGatewayRequestFromArgs(c *CmdConfig, r *godo.VPCNATGatewayRequest, requestType requestType) error {
+	var hydrators = []func() error{
+		func() error {
+			name, err := c.Doit.GetString(c.NS, doctl.ArgVPCNATGatewayName)
+			if err != nil {
+				return err
+			}
+			r.Name = name
+			return nil
+		},
+		func() error {
+			gatewayType, err := c.Doit.GetString(c.NS, doctl.ArgVPCNATGatewayType)
+			if err != nil {
+				return err
+			}
+			r.Type = gatewayType
+			return nil
+		},
+		func() error {
+			region, err := c.Doit.GetString(c.NS, doctl.ArgVPCNATGatewayRegion)
+			if err != nil {
+				return err
+			}
+			r.Region = region
+			return nil
+		},
+		func() error {
+			size, err := c.Doit.GetInt(c.NS, doctl.ArgVPCNATGatewaySize)
+			if err != nil {
+				return err
+			}
+			r.Size = uint32(size)
+			return nil
+		},
+		func() error {
+			vpcs, err := c.Doit.GetStringSlice(c.NS, doctl.ArgVPCNATGatewayVPCs)
+			if err != nil {
+				return err
+			}
+			for _, vpc := range vpcs {
+				if pieces := strings.Split(vpc, ":"); len(pieces) > 0 {
+					ingressVPC := &godo.IngressVPC{
+						VpcUUID: pieces[0],
+					}
+					// Remaining pieces may be provided in any order: the literal
+					// "default" marks the gateway as the VPC's default, and any other
+					// value is treated as the (private-preview) subnet UUID to restrict
+					// the gateway to.
+					for _, piece := range pieces[1:] {
+						if piece == "" {
+							continue
+						}
+						if strings.EqualFold(piece, "default") {
+							ingressVPC.DefaultGateway = true
+							continue
+						}
+						ingressVPC.SubnetUUID = piece
+					}
+					r.VPCs = append(r.VPCs, ingressVPC)
+				}
+			}
+			return nil
+		},
+		func() error {
+			timeout, err := c.Doit.GetInt(c.NS, doctl.ArgVPCNATGatewayUDPTimeout)
+			if err != nil {
+				return err
+			}
+			r.UDPTimeoutSeconds = uint32(timeout)
+			return nil
+		},
+		func() error {
+			timeout, err := c.Doit.GetInt(c.NS, doctl.ArgVPCNATGatewayICMPTimeout)
+			if err != nil {
+				return err
+			}
+			r.ICMPTimeoutSeconds = uint32(timeout)
+			return nil
+		},
+		func() error {
+			timeout, err := c.Doit.GetInt(c.NS, doctl.ArgVPCNATGatewayTCPTimeout)
+			if err != nil {
+				return err
+			}
+			r.TCPTimeoutSeconds = uint32(timeout)
+			return nil
+		},
+	}
+	if requestType == createRequestType {
+		hydrators = append(hydrators,
+			func() error {
+				projectID, err := c.Doit.GetString(c.NS, doctl.ArgProjectID)
+				if err != nil {
+					return err
+				}
+				r.ProjectID = projectID
+				return nil
+			},
+			func() error {
+				ip, err := c.Doit.GetString(c.NS, doctl.ArgVPCNATGatewayIP)
+				if err != nil {
+					return err
+				}
+				if ip != "" {
+					r.Egresses = &godo.Egresses{
+						PublicGateways: []*godo.PublicGateway{
+							{IP: ip},
+						},
+					}
+				}
+				return nil
+			},
+		)
+	}
+	for _, hydrate := range hydrators {
+		if err := hydrate(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// RunVPCNATGatewayCreate creates a VPC NAT Gateway
+func RunVPCNATGatewayCreate(c *CmdConfig) error {
+	createReq := new(godo.VPCNATGatewayRequest)
+	if err := buildVPCNATGatewayRequestFromArgs(c, createReq, createRequestType); err != nil {
+		return err
+	}
+	gateway, err := c.VPCNATGateways().Create(createReq)
+	if err != nil {
+		return err
+	}
+	item := &displayers.VPCNATGateways{VPCNATGateways: []*godo.VPCNATGateway{gateway}}
+	return c.Display(item)
+}
+
+// RunVPCNATGatewayUpdate updates a VPC NAT Gateway
+func RunVPCNATGatewayUpdate(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+	id := c.Args[0]
+	updateReq := new(godo.VPCNATGatewayRequest)
+	if err = buildVPCNATGatewayRequestFromArgs(c, updateReq, updateRequestType); err != nil {
+		return err
+	}
+	gateway, err := c.VPCNATGateways().Update(id, updateReq)
+	if err != nil {
+		return err
+	}
+	item := &displayers.VPCNATGateways{VPCNATGateways: []*godo.VPCNATGateway{gateway}}
+	return c.Display(item)
+}
+
+// RunVPCNATGatewayGet retrieves a VPC NAT Gateway
+func RunVPCNATGatewayGet(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+	id := c.Args[0]
+	gateway, err := c.VPCNATGateways().Get(id)
+	if err != nil {
+		return err
+	}
+	item := &displayers.VPCNATGateways{VPCNATGateways: []*godo.VPCNATGateway{gateway}}
+	return c.Display(item)
+}
+
+// RunVPCNATGatewayList lists all VPC NAT Gateways
+func RunVPCNATGatewayList(c *CmdConfig) error {
+	gateways, err := c.VPCNATGateways().List()
+	if err != nil {
+		return err
+	}
+	item := &displayers.VPCNATGateways{VPCNATGateways: gateways}
+	return c.Display(item)
+}
+
+// RunVPCNATGatewayDelete deletes a VPC NAT Gateway
+func RunVPCNATGatewayDelete(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+	id := c.Args[0]
+	force, err := c.Doit.GetBool(c.NS, doctl.ArgForce)
+	if err != nil {
+		return err
+	}
+	if err := confirmDelete(force, "vpc nat gateway", 1); err != nil {
+		return err
+	}
+	return c.VPCNATGateways().Delete(id)
+}

@@ -290,8 +290,13 @@ var _ = suite("apps/create", func(t *testing.T, when spec.G, it spec.S) {
 			)
 			output, err := cmd.CombinedOutput()
 			expect.NoError(err)
-			expectedOutput := "Notice: App creation is in progress, waiting for app to be running\n.\nNotice: App created\n" + testAppsOutput
-			expect.Equal(expectedOutput, strings.TrimSpace(string(output)))
+			expectedOutput := "Deploying app (93a37175-f520-4a12-a7ad-26e63491dbf4) (elapsed)\n" +
+				// Without an updating line to rewrite, each step count the
+				// deployment reports gets a line of its own.
+				"Deploying app (93a37175-f520-4a12-a7ad-26e63491dbf4) (0 of 1 steps complete) (elapsed)\n" +
+				"App (93a37175-f520-4a12-a7ad-26e63491dbf4) deployment is complete (elapsed)\n" +
+				"Notice: App created\n" + testAppsOutput
+			expect.Equal(expectedOutput, normalizeWaitElapsed(strings.TrimSpace(string(output))))
 		})
 	})
 	when("the upsert flag is passed", func() {
@@ -644,8 +649,13 @@ var _ = suite("apps/update", func(t *testing.T, when spec.G, it spec.S) {
 			)
 			output, err := cmd.CombinedOutput()
 			expect.NoError(err)
-			expectedOutput := "Notice: App update is in progress, waiting for app to be running\n.\nNotice: App updated\n" + testAppsOutput
-			expect.Equal(expectedOutput, strings.TrimSpace(string(output)))
+			expectedOutput := "Deploying app (93a37175-f520-4a12-a7ad-26e63491dbf4) (elapsed)\n" +
+				// Without an updating line to rewrite, each step count the
+				// deployment reports gets a line of its own.
+				"Deploying app (93a37175-f520-4a12-a7ad-26e63491dbf4) (0 of 1 steps complete) (elapsed)\n" +
+				"App (93a37175-f520-4a12-a7ad-26e63491dbf4) deployment is complete (elapsed)\n" +
+				"Notice: App updated\n" + testAppsOutput
+			expect.Equal(expectedOutput, normalizeWaitElapsed(strings.TrimSpace(string(output))))
 		})
 	})
 })
@@ -801,8 +811,13 @@ var _ = suite("apps/create-deployment", func(t *testing.T, when spec.G, it spec.
 			output, _ := cmd.CombinedOutput()
 			//expect.NoError(err)
 
-			expectedOutput := "Notice: App deployment is in progress, waiting for deployment to be running\n.\nNotice: Deployment created\n" + testActiveDeploymentOutput
-			expect.Equal(expectedOutput, strings.TrimSpace(string(output)))
+			expectedOutput := "Deploying app (93a37175-f520-4a12-a7ad-26e63491dbf4) (elapsed)\n" +
+				// Without an updating line to rewrite, each step count the
+				// deployment reports gets a line of its own.
+				"Deploying app (93a37175-f520-4a12-a7ad-26e63491dbf4) (0 of 1 steps complete) (elapsed)\n" +
+				"App (93a37175-f520-4a12-a7ad-26e63491dbf4) deployment is complete (elapsed)\n" +
+				"Notice: Deployment created\n" + testActiveDeploymentOutput
+			expect.Equal(expectedOutput, normalizeWaitElapsed(strings.TrimSpace(string(output))))
 		})
 	})
 })
@@ -923,7 +938,7 @@ var _ = suite("apps/get-logs", func(t *testing.T, when spec.G, it spec.S) {
 		wsServer *httptest.Server
 		upgrader = websocket.Upgrader{}
 	)
-
+	now := time.Now().Format(time.RFC3339)
 	it.Before(func() {
 		expect = require.New(t)
 
@@ -985,20 +1000,20 @@ var _ = suite("apps/get-logs", func(t *testing.T, when spec.G, it spec.S) {
 				data := struct {
 					Data string `json:"data"`
 				}{
-					Data: "fake logs\n",
+					Data: fmt.Sprintf("foo-service %v fake logs\n", now),
 				}
 				buf := new(bytes.Buffer)
 				json.NewEncoder(buf).Encode(data)
 
 				err = c.WriteMessage(websocket.TextMessage, buf.Bytes())
-				if err != nil {
-					require.NoError(t, err)
-				}
+				require.NoError(t, err)
 
 				if i == finish {
 					break
 				}
 			}
+			err = c.WriteMessage(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+			require.NoError(t, err)
 		}))
 		logsURL = wsServer.URL
 	})
@@ -1018,7 +1033,29 @@ var _ = suite("apps/get-logs", func(t *testing.T, when spec.G, it spec.S) {
 		)
 
 		output, err := cmd.CombinedOutput()
-		expect.NoError(err)
+		expect.NoError(err, "output: %v", string(output))
+
+		logLine := fmt.Sprintf("foo-service %v fake logs", now)
+		expectedOutput := fmt.Sprintf("%s\n%s\n%s\n%s\n%s", logLine, logLine, logLine, logLine, logLine)
+		expect.Equal(expectedOutput, strings.TrimSpace(string(output)))
+	})
+	it("removes the prefix from an app's logs", func() {
+		cmd := exec.Command(builtBinaryPath,
+			"-t", "some-magic-token",
+			"-u", server.URL,
+			"apps",
+			"logs",
+			testAppUUID,
+			"service",
+			"--deployment="+testDeploymentUUID,
+			"--type=run",
+			"--tail=1",
+			"-f",
+			"--no-prefix",
+		)
+
+		output, err := cmd.CombinedOutput()
+		expect.NoError(err, "output: %v", string(output))
 
 		expectedOutput := "fake logs\nfake logs\nfake logs\nfake logs\nfake logs"
 		expect.Equal(expectedOutput, strings.TrimSpace(string(output)))
@@ -1207,7 +1244,7 @@ services:
 		output, err := cmd.CombinedOutput()
 		expect.Equal("exit status 1", err.Error())
 
-		expectedOutput := "Error: parsing app spec: json: cannot unmarshal object into Go struct field AppSpec.services of type []*godo.AppServiceSpec"
+		expectedOutput := "Error: parsing app spec: json: cannot unmarshal object into Go struct field AppSpec.services of type []*godo.AppServiceSpec\n→ run doctl apps propose --help"
 		expect.Equal(expectedOutput, strings.TrimSpace(string(output)))
 	})
 })
@@ -1337,8 +1374,8 @@ var _ = suite("apps/upgrade-buildpack", func(t *testing.T, when spec.G, it spec.
 		output, err := cmd.CombinedOutput()
 
 		expect.Equal(heredoc.Doc(`
-			upgraded buildpack digitalocean/go. 2 components were affected: [api www].
-			triggered a new deployment to apply the upgrade:
+			Notice: upgraded buildpack digitalocean/go. 2 components were affected: [api www].
+			Notice: triggered a new deployment to apply the upgrade:
 			
 			ID                                      Cause     Progress    Phase             Created At                       Updated At
 			f4e37431-a0f4-458f-8f9f-5c9a61d8562f    Manual    0/1         PENDING_DEPLOY    1970-01-01 00:00:01 +0000 UTC    1970-01-01 00:00:01 +0000 UTC

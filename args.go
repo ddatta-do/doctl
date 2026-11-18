@@ -20,6 +20,8 @@ const (
 	ArgContext = "context"
 	// ArgDefaultContext is the default auth context
 	ArgDefaultContext = "default"
+	// ArgAuthContexts is the auth contexts
+	ArgAuthContexts = "auth-contexts"
 	// ArgActionID is an action id argument.
 	ArgActionID = "action-id"
 	// ArgActionAfter is an action after argument.
@@ -44,6 +46,16 @@ const (
 	ArgAppLogType = "type"
 	// ArgAppDeployment is the deployment ID.
 	ArgAppDeployment = "deployment"
+	// ArgAppJobName is the job name.
+	ArgAppJobName = "job-name"
+	// ArgAppJobInvocation is the job invocation ID.
+	ArgAppJobInvocation = "job-invocation"
+	// ArgAppEventID is the event ID.
+	ArgAppEventID = "event-id"
+	// ArgAppEventType is the event type filter.
+	ArgAppEventType = "event-type"
+	// ArgAppInstanceName is the instance name of currently running instances (optional).
+	ArgAppInstanceName = "instance-name"
 	// ArgAppDevConfig is the path to the app dev link config.
 	ArgAppDevConfig = "dev-config"
 	// ArgBuildCommand is an optional build command to set for local development.
@@ -54,8 +66,12 @@ const (
 	ArgAppLogFollow = "follow"
 	// ArgAppLogTail tail logs.
 	ArgAppLogTail = "tail"
+	// ArgNoPrefix no prefix to json logs
+	ArgNoPrefix = "no-prefix"
 	// ArgAppForceRebuild forces a deployment rebuild
 	ArgAppForceRebuild = "force-rebuild"
+	// ArgAppComponents is a list of components to restart.
+	ArgAppComponents = "components"
 	// ArgAppAlertDestinations is a path to an app alert destination file.
 	ArgAppAlertDestinations = "app-alert-destinations"
 	// ArgClusterName is a cluster name argument.
@@ -64,8 +80,16 @@ const (
 	ArgClusterVersionSlug = "version"
 	// ArgVPCUUID is a VPC UUID argument.
 	ArgVPCUUID = "vpc-uuid"
+	// ArgSubnetUUID is a VPC subnet UUID argument.
+	ArgSubnetUUID = "subnet-uuid"
 	// ArgClusterVPCUUID is a cluster vpc-uuid argument.
 	ArgClusterVPCUUID = "vpc-uuid"
+	// ArgWorkerSubnetUUID is a cluster worker subnet UUID argument.
+	ArgWorkerSubnetUUID = "worker-subnet-uuid"
+	// ArgClusterSubnet is a cluster pod CIDR argument.
+	ArgClusterSubnet = "cluster-subnet"
+	// ArgServiceSubnet is a cluster service CIDR argument.
+	ArgServiceSubnet = "service-subnet"
 	// ArgClusterNodePool are a cluster's node pools arguments.
 	ArgClusterNodePool = "node-pool"
 	// ArgClusterUpdateKubeconfig updates the local kubeconfig.
@@ -90,18 +114,101 @@ const (
 	ArgMajorVersion = "major-version"
 	// ArgAutoUpgrade is a cluster's auto-upgrade argument.
 	ArgAutoUpgrade = "auto-upgrade"
+
+	// ArgAutoscaleID is an autoscale id argument.
+	ArgAutoscaleID = "id"
+	// ArgAutoscaleName is an autoscale name argument.
+	ArgAutoscaleName = "name"
+	// ArgAutoscaleMinInstances is an autoscale min instance argument.
+	ArgAutoscaleMinInstances = "min-instances"
+	// ArgAutoscaleMaxInstances is an autoscale max instance argument.
+	ArgAutoscaleMaxInstances = "max-instances"
+	// ArgAutoscaleCpuTarget is an autoscale target cpu utilization argument.
+	ArgAutoscaleCpuTarget = "cpu-target"
+	// ArgAutoscaleMemTarget is an autoscale target memory utilization argument.
+	ArgAutoscaleMemTarget = "mem-target"
+	// ArgAutoscaleCooldownMinutes is an autoscale cooldown duration (minutes) argument.
+	ArgAutoscaleCooldownMinutes = "cooldown-minutes"
+	// ArgAutoscaleTargetInstances is an autoscale target instance argument.
+	ArgAutoscaleTargetInstances = "target-instances"
+
+	// ArgVPCNATGatewayName is a vpc nat gateway name argument.
+	ArgVPCNATGatewayName = "name"
+	// ArgVPCNATGatewayType is a vpc nat gateway type argument.
+	ArgVPCNATGatewayType = "type"
+	// ArgVPCNATGatewayRegion is a vpc nat gateway region argument.
+	ArgVPCNATGatewayRegion = "region"
+	// ArgVPCNATGatewaySize is a vpc nat gateway region argument.
+	ArgVPCNATGatewaySize = "size"
+	// ArgVPCNATGatewayVPCs is a vpc nat gateway vpcs argument.
+	ArgVPCNATGatewayVPCs = "vpcs"
+	// ArgVPCNATGatewayUDPTimeout is a vpc nat gateway udp-timeout argument.
+	ArgVPCNATGatewayUDPTimeout = "udp-timeout"
+	// ArgVPCNATGatewayICMPTimeout is a vpc nat gateway icmp-timeout argument.
+	ArgVPCNATGatewayICMPTimeout = "icmp-timeout"
+	// ArgVPCNATGatewayTCPTimeout is a vpc nat gateway tcp-timeout argument.
+	ArgVPCNATGatewayTCPTimeout = "tcp-timeout"
+	// ArgVPCNATGatewayIP is an optional BYOIP address for VPC NAT Gateway create.
+	ArgVPCNATGatewayIP = "ip"
+
 	// ArgHA is a cluster's highly available control plane argument.
 	ArgHA = "ha"
+	// ArgIsolatedWorkers is a cluster's isolated workers argument.
+	ArgIsolatedWorkers = "isolated-workers"
+	// ArgGPUOperatorReady is a cluster's GPU operator ready argument.
+	ArgGPUOperatorReady = "gpu-operator-ready"
 	// ArgEnableControlPlaneFirewall enable control plane firewall.
 	ArgEnableControlPlaneFirewall = "enable-control-plane-firewall"
 	// ArgControlPlaneFirewallAllowedAddresses list of allowed addresses that can access the control plane.
 	ArgControlPlaneFirewallAllowedAddresses = "control-plane-firewall-allowed-addresses"
+	// ArgClusterAutoscalerScaleDownUtilizationThreshold is the cluster autoscaler scale down utilization threshold
+	ArgClusterAutoscalerScaleDownUtilizationThreshold = "scale-down-utilization-threshold"
+	// ArgClusterAutoscalerScaleDownUnneededTime is the cluster autoscaler scale down unneeded time
+	ArgClusterAutoscalerScaleDownUnneededTime = "scale-down-unneeded-time"
+	// ArgClusterAutoscalerExpanders customizes the expanders used by the cluster autoscaler to scale up the cluster.
+	ArgClusterAutoscalerExpanders = "expanders"
+	// ArgEnableRoutingAgent enables the routing-agent cluster plugin.
+	ArgEnableRoutingAgent = "enable-routing-agent"
+	// ArgEnablePeerToPeerOciRegistryPlugin enables the Peer-to-peer OCI registry cluster plugin.
+	ArgEnablePeerToPeerOciRegistryPlugin = "enable-peer-to-peer-oci-registry-plugin"
+	// ArgEnableNfsCsiPlugin enables the NFS CSI driver cluster plugin.
+	ArgEnableNfsCsiPlugin = "enable-nfs-csi-plugin"
+	// ArgEnableCorednsAutoscaler enables the CoreDNS Autoscaler cluster plugin.
+	ArgEnableCorednsAutoscaler = "enable-coredns-autoscaler"
+	// ArgEnableInsightsLogs opts the cluster in to sending its logs to Insights.
+	ArgEnableInsightsLogs = "enable-insights-logs"
+	// ArgEnableAmdGpuDevicePlugin enables automatic amd gpu device plugin installation.
+	ArgEnableAmdGpuDevicePlugin = "enable-amd-gpu-device-plugin"
+	// ArgEnableAmdGpuDeviceMetricsExporterPlugin enables automatic amd gpu device metrics exporter plugin installation.
+	ArgEnableAmdGpuDeviceMetricsExporterPlugin = "enable-amd-gpu-device-metrics-exporter-plugin"
+	// ArgEnableNvidiaGpuDevicePlugin enables automatic NVIDIA gpu device plugin installation.
+	ArgEnableNvidiaGpuDevicePlugin = "enable-nvidia-gpu-device-plugin"
+	// ArgEnableNvidiaGpuDraDriver enables the NVIDIA GPU DRA Driver cluster plugin.
+	ArgEnableNvidiaGpuDraDriver = "enable-nvidia-gpu-dra-driver"
+	// ArgEnableAmdGpuDraDriver enables the AMD GPU DRA Driver cluster plugin.
+	ArgEnableAmdGpuDraDriver = "enable-amd-gpu-dra-driver"
+	// ArgEnableRDMASharedDevicePlugin enables automatic NVIDIA gpu device plugin installation.
+	ArgEnableRDMASharedDevicePlugin = "enable-rdma-shared-device-plugin"
+	// ArgKubernetesEnableSSO enables SSO as a method of authentication for the DOKS cluster.
+	ArgKubernetesEnableSSO = "sso-enabled"
+	// ArgKubernetesRequireSSO requires SSO as the only method of authentication for the DOKS cluster.
+	ArgKubernetesRequireSSO = "sso-required"
+	// ArgKubernetesSSOIssuerURL is the OIDC issuer URL for cluster SSO configuration.
+	ArgKubernetesSSOIssuerURL = "sso-issuer-url"
+	// ArgKubernetesSSOClientID is the OIDC client ID for cluster SSO configuration.
+	ArgKubernetesSSOClientID = "sso-client-id"
+	// ArgKubernetesSSOLocalServerPort is the port to use for the local server which handles SSO authentication flow.
+	ArgKubernetesSSOLocalServerPort = "sso-local-server-port"
 	// ArgSurgeUpgrade is a cluster's surge-upgrade argument.
 	ArgSurgeUpgrade = "surge-upgrade"
 	// ArgCommandUpsert is an upsert for a resource to be created or updated argument.
 	ArgCommandUpsert = "upsert"
+	// ArgCommandUpdateSources tells the respective operation to also update the underlying sources.
+	ArgCommandUpdateSources = "update-sources"
 	// ArgCommandWait is a wait for a resource to be created argument.
 	ArgCommandWait = "wait"
+	// ArgWaitTimeout bounds how long --wait polls before giving up.
+	ArgWaitTimeout = "wait-timeout"
 	// ArgSetCurrentContext is a flag to set the new kubeconfig context as current.
 	ArgSetCurrentContext = "set-current-context"
 	// ArgDropletID is a droplet id argument.
@@ -118,6 +225,8 @@ const (
 	ArgKubernetesAlias = "alias"
 	// ArgKubeConfigExpirySeconds indicates the length of time the token in a kubeconfig will be valid in seconds.
 	ArgKubeConfigExpirySeconds = "expiry-seconds"
+	// ArgKubeConfigType selects the kubeconfig authentication mechanism: token, sso, or unset for the API default.
+	ArgKubeConfigType = "type"
 	// ArgImage is an image argument.
 	ArgImage = "image"
 	// ArgImageID is an image id argument.
@@ -128,6 +237,8 @@ const (
 	ArgImageSlug = "image-slug"
 	// ArgInteractive is the argument to enable an interactive CLI.
 	ArgInteractive = "interactive"
+	// ArgShow reveals masked values, such as secrets, instead of hiding them.
+	ArgShow = "show"
 	// ArgIPAddress is an IP address argument.
 	ArgIPAddress = "ip-address"
 	// ArgDropletName is a droplet name argument.
@@ -144,10 +255,18 @@ const (
 	ArgResourceType = "resource"
 	// ArgBackups is an enable backups argument.
 	ArgBackups = "enable-backups"
+	// ArgDropletBackupPolicyPlan sets a frequency plan for backups.
+	ArgDropletBackupPolicyPlan = "backup-policy-plan"
+	// ArgDropletBackupPolicyWeekday sets backup policy day of the week.
+	ArgDropletBackupPolicyWeekday = "backup-policy-weekday"
+	// ArgDropletBackupPolicyHour sets backup policy hour.
+	ArgDropletBackupPolicyHour = "backup-policy-hour"
 	// ArgIPv6 is an enable IPv6 argument.
 	ArgIPv6 = "enable-ipv6"
 	// ArgPrivateNetworking is an enable private networking argument.
 	ArgPrivateNetworking = "enable-private-networking"
+	// ArgPublicNetworking is an enable public networking argument.
+	ArgPublicNetworking = "enable-public-networking"
 	// ArgMonitoring is an enable monitoring argument.
 	ArgMonitoring = "enable-monitoring"
 	// ArgDropletAgent is an argument for enabling/disabling the Droplet agent.
@@ -239,7 +358,8 @@ const (
 	// ArgTriggerDeployment indicates whether to trigger a deployment
 	ArgTriggerDeployment = "trigger-deployment"
 	// ArgVersion is the version of the command to use
-	ArgVersion = "version"
+	ArgVersion          = "version"
+	ArgKubernetesSSOURL = "sso-url"
 	// ArgVerbose enables verbose output
 	ArgVerbose = "verbose"
 
@@ -351,6 +471,12 @@ const (
 	ArgTargetLoadBalancerIDs = "target-lb-ids"
 	// ArgLoadBalancerNetwork is the type of network the load balancer is accessible from.
 	ArgLoadBalancerNetwork = "network"
+	// ArgLoadBalancerNetworkStack is the network stack type the load balancer will be configured with (e.g IPv4, Dual Stack: IPv4 and IPv6).
+	ArgLoadBalancerNetworkStack = "network-stack"
+	// ArgLoadBalancerTLSCipherPolicy is the tls cipher policy to be used for the load balancer
+	ArgLoadBalancerTLSCipherPolicy = "tls-cipher-policy"
+	// ArgLoadBalancerIP is an optional BYOIP address to assign on load balancer create.
+	ArgLoadBalancerIP = "ip"
 
 	// ArgFirewallName is a name of the firewall.
 	ArgFirewallName = "name"
@@ -392,6 +518,12 @@ const (
 	ArgDatabaseMaintenanceDay = "day"
 	// ArgDatabaseMaintenanceHour is the new hour for the maintenance window
 	ArgDatabaseMaintenanceHour = "hour"
+	// ArgDatabaseStorageAutoscaleEnabled enables or disables storage autoscaling for a database cluster
+	ArgDatabaseStorageAutoscaleEnabled = "enabled"
+	// ArgDatabaseStorageAutoscaleThresholdPercent is the storage usage percentage that triggers autoscaling
+	ArgDatabaseStorageAutoscaleThresholdPercent = "threshold-percent"
+	// ArgDatabaseStorageAutoscaleIncrementGib is the amount of storage, in GiB, to add when autoscaling triggers
+	ArgDatabaseStorageAutoscaleIncrementGib = "increment-gib"
 	// ArgDatabasePoolUserName is the name of user for use with connection pool
 	ArgDatabasePoolUserName = "user"
 	// ArgDatabasePoolDBName is the database for use with connection pool
@@ -406,6 +538,8 @@ const (
 	ArgDatabasePrivateConnectionBool = "private"
 	// ArgDatabaseUserKafkaACLs will specify permissions on topics in kafka clsuter
 	ArgDatabaseUserKafkaACLs = "acl"
+	// ArgDatabaseUserOpenSearchACLs will specify permissions on indexes in opensearch clsuter
+	ArgDatabaseUserOpenSearchACLs = "opensearch-acl"
 
 	// ArgDatabaseTopicReplicationFactor is the replication factor of a kafka topic
 	ArgDatabaseTopicReplicationFactor = "replication-factor"
@@ -429,8 +563,8 @@ const (
 	ArgDatabaseTopicMaxCompactionLagMS = "max-compaction-lag-ms"
 	// ArgDatabaseTopicMaxMessageBytes is the maximum size, in bytes, of the largest record batch that can be sent to the server
 	ArgDatabaseTopicMaxMessageBytes = "max-message-bytes"
-	// ArgDatabaseTopicMesssageDownConversionEnable determines whether brokers should convert messages for consumers expecting older message formats
-	ArgDatabaseTopicMesssageDownConversionEnable = "message-down-conversion-enable"
+	// ArgDatabaseTopicMessageDownConversionEnable determines whether brokers should convert messages for consumers expecting older message formats
+	ArgDatabaseTopicMessageDownConversionEnable = "message-down-conversion-enable"
 	// ArgDatabaseTopicMessageFormatVersion is the version used by the broker to append messages to the kafka topic logs
 	ArgDatabaseTopicMessageFormatVersion = "message-format-version"
 	// ArgDatabaseTopicMessageTimestampType is the timestamp used for messages
@@ -481,6 +615,33 @@ const (
 	// ArgVPCPeeringVPCID is id of the VPC.
 	ArgVPCPeeringVPCID = "vpc-id"
 
+	// ArgPartnerAttachmentType is the type of the Partner Attachment e.g. "partner".
+	ArgPartnerAttachmentType = "type"
+	// ArgPartnerAttachmentName is a name of the Partner Attachment.
+	ArgPartnerAttachmentName = "name"
+	// ArgPartnerAttachmentBandwidthInMbps is the connection bandwidth in megabits per second.
+	ArgPartnerAttachmentBandwidthInMbps = "connection-bandwidth-in-mbps"
+	// ArgPartnerAttachmentRegion is the region slug.
+	ArgPartnerAttachmentRegion = "region"
+	// ArgPartnerAttachmentNaaSProvider is the name of the Network as a Service provider
+	ArgPartnerAttachmentNaaSProvider = "naas-provider"
+	// ArgPartnerAttachmentVPCIDs are the IDs of the VPCs which the Partner Attachment is connected
+	ArgPartnerAttachmentVPCIDs = "vpc-ids"
+	// ArgPartnerAttachmentBGPLocalASN is the BGP Autonomous System Number (ASN) of the local device
+	ArgPartnerAttachmentBGPLocalASN = "bgp-local-asn"
+	// ArgPartnerAttachmentBGPLocalRouterIP is the BGP IP address of the local device
+	ArgPartnerAttachmentBGPLocalRouterIP = "bgp-local-router-ip"
+	// ArgPartnerAttachmentBGPPeerASN is the BGP Autonomous System Number (ASN) of the peer device
+	ArgPartnerAttachmentBGPPeerASN = "bgp-peer-asn"
+	// ArgPartnerAttachmentBGPPeerRouterIP is the BGP IP address of the peer device
+	ArgPartnerAttachmentBGPPeerRouterIP = "bgp-peer-router-ip"
+	// ArgPartnerAttachmentBGPAuthKey is the BGP MD5 authentication key
+	ArgPartnerAttachmentBGPAuthKey = "bgp-auth-key"
+	// ArgPartnerAttachmentRedundancyZone is the redundancy zone of the Partner Attachment
+	ArgPartnerAttachmentRedundancyZone = "redundancy-zone"
+	// ArgPartnerAttachmentParentUUID is the ha parent uuid of the Partner Attachment
+	ArgPartnerAttachmentParentUUID = "parent-uuid"
+
 	// ArgReadWrite indicates a generated token should be read/write.
 	ArgReadWrite = "read-write"
 	// ArgRegistry indicates the name of the registry.
@@ -520,6 +681,13 @@ const (
 	// ArgDatabaseFirewallRuleUUID is the UUID for the firewall rules.
 	ArgDatabaseFirewallRuleUUID = "uuid"
 
+	// ArgVectorDBDefaultQuantization is the default quantization setting for a vector database.
+	ArgVectorDBDefaultQuantization = "default-quantization"
+	// ArgVectorDBEnableAutoSchema enables automatic schema creation for a vector database.
+	ArgVectorDBEnableAutoSchema = "enable-auto-schema"
+	// ArgVectorDBWeaviateVersion is the Weaviate version for a vector database.
+	ArgVectorDBWeaviateVersion = "weaviate-version"
+
 	// Monitoring Args
 
 	// ArgAlertPolicyDescription is the flag to pass in the alert policy description.
@@ -555,6 +723,728 @@ const (
 	// ArgAlertPolicySlackURLs are the Slack URLs to send alerts to.
 	ArgAlertPolicySlackURLs = "slack-urls"
 
+	// Insights Args
+
+	// ArgInsightsName is the name of an Insights resource.
+	ArgInsightsName = "name"
+
+	// ArgInsightsType selects an Insights resource type.
+	ArgInsightsType = "type"
+
+	// ArgInsightsRequestFile is a complete JSON or YAML API request.
+	ArgInsightsRequestFile = "request-file"
+
+	// ArgInsightsEmails is a list of notification email addresses.
+	ArgInsightsEmails = "emails"
+
+	// ArgInsightsSlackChannel is a Slack channel name.
+	ArgInsightsSlackChannel = "slack-channel"
+
+	// ArgInsightsSlackWebhookURL is a Slack incoming webhook URL.
+	ArgInsightsSlackWebhookURL = "slack-webhook-url"
+
+	// ArgInsightsWebhookURL is an HTTPS webhook destination.
+	ArgInsightsWebhookURL = "webhook-url"
+
+	// ArgInsightsWebhookHeader is a webhook header in key=value form.
+	ArgInsightsWebhookHeader = "webhook-header"
+
+	// ArgInsightsWebhookBasicAuthUsername is a webhook basic-auth username.
+	ArgInsightsWebhookBasicAuthUsername = "webhook-basic-auth-username"
+
+	// ArgInsightsWebhookBasicAuthPassword is a webhook basic-auth password.
+	ArgInsightsWebhookBasicAuthPassword = "webhook-basic-auth-password"
+
+	// ArgInsightsWebhookBearerToken is a webhook bearer token.
+	ArgInsightsWebhookBearerToken = "webhook-bearer-token"
+
+	// ArgInsightsWebhookSigningSecret is a webhook HMAC signing secret.
+	ArgInsightsWebhookSigningSecret = "webhook-signing-secret"
+
+	// ArgInsightsMetric is the metric evaluated by an alert rule.
+	ArgInsightsMetric = "metric"
+
+	// ArgInsightsResourceURN filters or scopes Insights resources.
+	ArgInsightsResourceURN = "resource-urn"
+
+	// ArgInsightsTag is a resource tag used by an alert rule.
+	ArgInsightsTag = "tag"
+
+	// ArgInsightsFilter is an alert query filter in field,operator,value form.
+	ArgInsightsFilter = "filter"
+
+	// ArgInsightsWindow is an alert evaluation window.
+	ArgInsightsWindow = "window"
+
+	// ArgInsightsOperator is an alert threshold operator.
+	ArgInsightsOperator = "operator"
+
+	// ArgInsightsWarningThreshold is an alert warning threshold.
+	ArgInsightsWarningThreshold = "warning-threshold"
+
+	// ArgInsightsCriticalThreshold is an alert critical threshold.
+	ArgInsightsCriticalThreshold = "critical-threshold"
+
+	// ArgInsightsNotificationChannel is a notification channel ID.
+	ArgInsightsNotificationChannel = "notification-channel"
+
+	// ArgInsightsNotifyOn is an alert severity that triggers notification.
+	ArgInsightsNotifyOn = "notify-on"
+
+	// ArgInsightsReAlertDuration controls repeated alert notifications.
+	ArgInsightsReAlertDuration = "re-alert-duration"
+
+	// ArgInsightsStatus is an alert rule status.
+	ArgInsightsStatus = "status"
+
+	// ArgInsightsPage is the page number for an Insights list operation.
+	ArgInsightsPage = "page"
+
+	// ArgInsightsPerPage is the page size for an Insights list operation.
+	ArgInsightsPerPage = "per-page"
+
+	// Security Args
+
+	// ArgSecurityScanResources are the resources to scan.
+	ArgSecurityScanResources = "resources"
+	// ArgSecurityScanFindingSeverity filters findings by severity.
+	ArgSecurityScanFindingSeverity = "severity"
+	// ArgSecurityScanFindingType filters findings by type.
+	ArgSecurityScanFindingType = "type"
+	// ArgSecurityFindingUUID is the finding UUID for finding operations.
+	ArgSecurityFindingUUID = "finding-uuid"
+
+	// Secrets Args
+
+	// ArgSecretValue is a key-value pair for a secret in key=value format.
+	ArgSecretValue = "value"
+	// ArgSecretFromEnvFile loads key-value pairs from an env file.
+	ArgSecretFromEnvFile = "from-env-file"
+	// ArgSecretVersion is the current version of a secret for update operations.
+	ArgSecretVersion = "version"
+	// ArgSecretShowKV prints secret values as KEY=VALUE pairs on get.
+	ArgSecretShowKV = "kvs"
+	// ArgSecretRaw writes a single secret value to stdout with no formatting.
+	ArgSecretRaw = "raw"
+	// ArgSecretReplace replaces all key-value pairs in a secret on update.
+	ArgSecretReplace = "replace"
+
 	// ArgTokenValidationServer is the server used to validate an OAuth token
 	ArgTokenValidationServer = "token-validation-server"
+
+	// ArgOAuthServer is the OAuth authorization server used to sign in.
+	ArgOAuthServer = "oauth-server"
+	// ArgOAuthClientID overrides the OAuth application doctl signs in as.
+	ArgOAuthClientID = "client-id"
+	// ArgOAuthScopes is the space-separated list of scopes requested when signing in.
+	ArgOAuthScopes = "scopes"
+	// ArgOAuthSaveScope persists --scopes as the default for later logins.
+	ArgOAuthSaveScope = "save-scope"
+	// ArgOAuthCallbackPort is the local port that receives the OAuth redirect.
+	ArgOAuthCallbackPort = "callback-port"
+	// ArgOAuthNoBrowser prints the authorization URL instead of opening a browser.
+	ArgOAuthNoBrowser = "no-browser"
+	// ArgOAuthTimeout bounds how long to wait for browser authorization, in seconds.
+	ArgOAuthTimeout = "timeout"
+
+	// ArgGPUs specifies to list GPU Droplets
+	ArgGPUs = "gpus"
+
+	// ArgKnowledgeBaseDatabaseID is the ID of the database
+	ArgKnowledgeBaseDatabaseID = "database-id"
+
+	// ArgKnowledgeBaseName is the name of the knowledge base
+	ArgKnowledgeBaseName = "name"
+
+	// ArgKnowledgeBaseRegion is the region of the knowledge base
+	ArgKnowledgeBaseRegion = "region"
+
+	// ArgKnowledgeBaseProjectID is the project ID of the knowledge base
+	ArgKnowledgeBaseProjectID = "project-id"
+
+	// ArgKnowledgeBaseEmbeddingModelUUID is the UUID of the embedding model
+	ArgKnowledgeBaseEmbeddingModelUUID = "embedding-model-uuid"
+
+	// ArgKnowledgeBaseTags is the tags of the knowledge base
+	ArgKnowledgeBaseTags = "tags"
+
+	// ArgKnowledgeBaseVPCUUID is the UUID of the VPC
+	ArgKnowledgeBaseVPCUUID = "vpc-uuid"
+
+	// ArgKnowledgeBaseDataSource is the data source of the knowledge base
+	ArgKnowledgeBaseDataSource = "data-sources"
+
+	// ArgKnowledgeBaseBaseURL is the base URL of the knowledge base
+	ArgKnowledgeBaseBaseURL = "base-url"
+
+	// ArgKnowledgeBaseCrawlingOption is the crawling option of the knowledge base
+	ArgKnowledgeBaseCrawlingOption = "crawling-option"
+
+	// ArgKnowledgeBaseEmbedMedia is the embed media option of the knowledge base
+	ArgKnowledgeBaseEmbedMedia = "embed-media"
+
+	// ArgKnowledgeBaseUUID is the UUID of the knowledge base
+	ArgKnowledgeBaseUUID = "uuid"
+
+	// ArgKnowledgeBaseDataSourceID is the ID of the data source
+	ArgKnowledgeBaseDataSourceID = "data-source-id"
+
+	// ArgKnowledgeBaseBucketName is name of data source from Spaces
+	ArgKnowledgeBaseBucketName = "bucket-name"
+
+	// ArgKnowledgeBaseItemPath is the item path of the data source
+	ArgKnowledgeBaseItemPath = "item-path"
+
+	// ArgPrefix is a byoip prefix argument.
+	ArgPrefix = "prefix"
+
+	// ArgSignature is a byoip prefix argument.
+	ArgSignature = "signature"
+
+	// ArgAdvertise is a byoip prefix argument.
+	ArgAdvertise = "advertise"
+
+	// ArgOpenAIKeyName is the name of the OpenAI API Key
+	ArgOpenAIKeyName = "name"
+
+	// ArgOpenAIKeyAPIKey is the API key for the OpenAI API Key
+	ArgOpenAIKeyAPIKey = "api-key"
+
+	// Dedicated Inference Args
+
+	// ArgDedicatedInferenceSpec is the path to a dedicated inference spec file.
+	ArgDedicatedInferenceSpec = "spec"
+
+	// ArgDedicatedInferenceHuggingFaceToken is the Hugging Face token (optional).
+	ArgDedicatedInferenceHuggingFaceToken = "hugging-face-token"
+
+	// ArgDedicatedInferenceAcceleratorSlug filters accelerators by slug (optional).
+	ArgDedicatedInferenceAcceleratorSlug = "slug"
+
+	// ArgDedicatedInferenceRegion filters dedicated inferences by region (optional).
+	ArgDedicatedInferenceRegion = "region"
+
+	// ArgDedicatedInferenceName filters dedicated inferences by name (optional).
+	ArgDedicatedInferenceName = "name"
+
+	// ArgDedicatedInferenceTokenName is the name for a dedicated inference auth token.
+	ArgDedicatedInferenceTokenName = "token-name"
+
+	// Serverless inference API args (https://inference.do-ai.run).
+
+	// ArgInferenceModel is the model ID used across inference endpoints.
+	ArgInferenceModel = "model"
+	// ArgInferenceMessage is the user message used across chat and messages endpoints.
+	ArgInferenceMessage = "message"
+	// ArgInferenceSystemMessage is an optional system message for the chat-completions endpoint.
+	ArgInferenceSystemMessage = "system-message"
+	// ArgInferenceRequest is a path to a JSON request body, accepted by all inference endpoints.
+	ArgInferenceRequest = "request"
+	// ArgInferenceStream enables SSE streaming, accepted by chat-completions, messages, responses, and images endpoints.
+	ArgInferenceStream = "stream"
+	// ArgInferenceTemperature is the sampling temperature for the chat-completions endpoint.
+	ArgInferenceTemperature = "temperature"
+	// ArgInferenceMaxTokens is the maximum number of tokens to generate, used by chat-completions and messages endpoints.
+	ArgInferenceMaxTokens = "max-tokens"
+	// ArgInferenceInput is the input text for the embeddings and responses endpoints.
+	ArgInferenceInput = "input"
+	// ArgInferencePrompt is the text prompt for image generation and async-invoke endpoints.
+	ArgInferencePrompt = "prompt"
+	// ArgInferenceInstructions is optional system-level instructions for the responses endpoint.
+	ArgInferenceInstructions = "instructions"
+	// ArgInferenceOutput is a file path to write generated image bytes for the images endpoint.
+	ArgInferenceOutput = "output"
+	// ArgInferenceN is the number of images to generate (1–10) for the images endpoint.
+	ArgInferenceN = "n"
+	// ArgInferenceText is the text input for async text-to-speech invocations.
+	ArgInferenceText = "text"
+	// ArgInferenceSecondsTotal is the audio duration in seconds for async audio generation.
+	ArgInferenceSecondsTotal = "seconds-total"
+
+	// Hosted Agents Args
+
+	// ArgAgentName is the name of the agent.
+	ArgAgentName = "name"
+
+	// ArgAgentSpec is the path to an agent spec file.
+	ArgAgentSpec = "spec"
+
+	// ArgAgentPageSize is the maximum number of sessions to return per page.
+	ArgAgentPageSize = "page-size"
+
+	// ArgAgentPageToken is the pagination cursor from a previous list response.
+	ArgAgentPageToken = "page-token"
+
+	// ArgAgentStatus filters sessions by lifecycle status.
+	ArgAgentStatus = "status"
+
+	// ArgAgentGracePeriod is the rotate-secret handoff window in seconds.
+	// Omit (or leave unset) for the server default of 5 minutes; 0 retires the
+	// old secret immediately; positive values set a custom window up to the
+	// server max (default 1 hour).
+	ArgAgentGracePeriod = "grace-period"
+
+	// ArgAgentWorkspacePath is the path inside the session workspace root (/workspace).
+	ArgAgentWorkspacePath = "workspace-path"
+
+	// ArgAgentLocalFile is the local file streamed up during a workspace upload.
+	ArgAgentLocalFile = "local-file"
+
+	// ArgAgentSaveTo is the local destination for a workspace download.
+	ArgAgentSaveTo = "save-to"
+
+	// ArgAgentArchive treats the workspace payload as a tar archive.
+	ArgAgentArchive = "archive"
+
+	// ArgAgentExecWorkdir is the guest directory a sandbox exec runs in.
+	ArgAgentExecWorkdir = "workdir"
+
+	// ArgAgentExecTimeout bounds a sandbox exec, in seconds.
+	ArgAgentExecTimeout = "timeout"
+
+	// ArgAgentPromptTimeout bounds how long `prompt` waits for the run it
+	// started to finish, in seconds.
+	ArgAgentPromptTimeout = "timeout"
+
+	// ArgAgentCancelRunID names the turn `cancel` stops; without it, whichever
+	// turn is in flight.
+	ArgAgentCancelRunID = "run-id"
+
+	// ArgAgentPromptIncludeReasoning also emits the model's reasoning, not
+	// just its answer, from a `prompt` run.
+	ArgAgentPromptIncludeReasoning = "include-reasoning"
+
+	// ArgAgentPromptQuiet suppresses `prompt`'s progress reporting on stderr.
+	ArgAgentPromptQuiet = "quiet"
+
+	// ArgAgentLsRecursive lists nested workspace entries, not just the
+	// immediate children of the listed directory.
+	ArgAgentLsRecursive = "recursive"
+
+	// ArgAgentProxyType selects which coding-agent protocol `start-proxy` impersonates.
+	ArgAgentProxyType = "type"
+
+	// ArgAgentProxySession is the session ID or name the proxy bridges to.
+	ArgAgentProxySession = "session"
+
+	// ArgAgentProxyPort is the local port `start-proxy` listens on.
+	ArgAgentProxyPort = "port"
+
+	// ArgAgentProxyReplay replays the session's event history into the first thread on connect.
+	ArgAgentProxyReplay = "replay"
+
+	// ArgAgentAuthNoBrowser prints the provider authorization URL instead of opening a browser.
+	ArgAgentAuthNoBrowser = "no-browser"
+
+	// ArgAgentNoWait makes `agents update --spec` return once the server has
+	// accepted the config update, without waiting for it to finish. Same flag
+	// string as ArgAgentAuthNoWait on `auth`.
+	ArgAgentNoWait = "no-wait"
+	// ArgAgentAuthNoWait prints the authorization URL and exits without polling for completion.
+	ArgAgentAuthNoWait = "no-wait"
+
+	// ArgAgentConnProvider is the external provider for a connection (e.g. github).
+	ArgAgentConnProvider = "provider"
+
+	// ArgAgentConnActor is the actor a connection acts for (user_id on the wire).
+	ArgAgentConnActor = "actor"
+
+	// ArgAgentConnScopes optionally narrows the OAuth scopes a connection requests.
+	ArgAgentConnScopes = "scopes"
+
+	// ArgAgentConnPage is the 1-based page number for connection list.
+	ArgAgentConnPage = "page"
+
+	// ArgAgentConnPerPage is the connection list page size.
+	ArgAgentConnPerPage = "per-page"
+
+	// ArgAgentCheckpointLabel is an optional user label for an explicit checkpoint.
+	ArgAgentCheckpointLabel = "label"
+
+	// ArgAgentForwardAddress is the local bind address for port-forward listeners.
+	ArgAgentForwardAddress = "address"
+	// ArgAgentAutomate is how port-forward answers Agent Canvas's Automate tab:
+	// confirm (ask in the terminal before a trigger is created, enabled or run),
+	// allow (no questions) or off (the tab is not served).
+	ArgAgentAutomate = "automate"
+	// ArgAgentCanvasPort is the local port the canvas proxy listens on (0 = any free port).
+	ArgAgentCanvasPort = "port"
+	// ArgAgentCanvasOpen opens the local Canvas URL in the default browser.
+	ArgAgentCanvasOpen = "open"
+
+	// ArgAgentFromCheckpoint is the checkpoint ID to fork or roll back from.
+	ArgAgentFromCheckpoint = "from-checkpoint"
+
+	// ArgAgentForkCount is how many child sessions a fork creates (1–4).
+	ArgAgentForkCount = "count"
+
+	// ArgAgentParentSessionID filters list to forked children of a parent session.
+	ArgAgentParentSessionID = "parent-session-id"
+
+	// ArgAgentPausedBy filters list to paused sessions with a given pause reason.
+	ArgAgentPausedBy = "paused-by"
+
+	// ArgAgentTriggerKind filters or sets trigger kind (webhook|cron).
+	ArgAgentTriggerKind = "kind"
+
+	// ArgAgentTriggerSessionMode is fresh|reuse for create.
+	ArgAgentTriggerSessionMode = "session-mode"
+
+	// ArgAgentTriggerPrompt is the prompt template sent on each firing.
+	ArgAgentTriggerPrompt = "prompt"
+
+	// ArgAgentTriggerOutputMode is none|email|slack.
+	ArgAgentTriggerOutputMode = "output-mode"
+
+	// ArgAgentTriggerOutputEmail is the destination when output-mode=email.
+	ArgAgentTriggerOutputEmail = "output-email"
+
+	// ArgAgentTriggerOutputSlackWebhook is the Slack incoming webhook URL when output-mode=slack.
+	ArgAgentTriggerOutputSlackWebhook = "output-slack-webhook"
+
+	// ArgAgentTriggerBoundSessionID is the PAUSED session UUID for session-mode=reuse.
+	ArgAgentTriggerBoundSessionID = "bound-session-id"
+
+	// ArgAgentTriggerProvider is the webhook provider (github|gitlab|custom).
+	ArgAgentTriggerProvider = "provider"
+
+	// ArgAgentTriggerCronExpr is the cron expression for kind=cron.
+	ArgAgentTriggerCronExpr = "cron-expr"
+
+	// ArgAgentTriggerTimezone is the IANA timezone for kind=cron.
+	ArgAgentTriggerTimezone = "timezone"
+
+	// ArgAgentFromConfig names an existing Agent Config, by ID or by name, to
+	// create a session from. Spelled to sit beside --from-checkpoint rather
+	// than next to --name, where --config-id read as "the config's name".
+	ArgAgentFromConfig = "from-config"
+
+	// ArgAgentBaseTemplate is the platform base key a custom sandbox template
+	// is rebased onto (codex-base | opencode-base | claude-code-base |
+	// hermes-base | langgraph-base | sandbox | crewai, or a legacy
+	// coding-* / langgraph key).
+	ArgAgentBaseTemplate = "base-template"
+
+	// ArgAgentTemplate selects the sandbox template a session runs on: a
+	// platform template or one of the team's own, since the two share a
+	// namespace server-side and a team template of the same name wins. Distinct
+	// from ArgAgentBaseTemplate, which is a build input rather than a runtime
+	// selection.
+	ArgAgentTemplate = "template"
+
+	// ArgAgentSourceOCIRef is the customer OCI image used as template input.
+	ArgAgentSourceOCIRef = "source-oci-ref"
+
+	// ArgAgentHarness selects a coding-agent runtime for `agents create`.
+	ArgAgentHarness = "harness"
+
+	// ArgAgentRepo is a Git repository URL cloned into the session workspace.
+	ArgAgentRepo = "gh-repo"
+
+	// ArgAgentWaitTimeout is how long `agents create` waits for readiness, in
+	// seconds.
+	ArgAgentWaitTimeout = "wait-timeout"
+
+	// ArgAgentSecret carries a NAME=VALUE tenant secret injected into the
+	// manifest at create time. Repeatable; also NAME=@file and NAME=-.
+	ArgAgentSecret = "secret"
+
+	// ArgAgentPermission is the tool-permission default (allow|ask|deny)
+	// written as permissions.default on a --harness manifest.
+	ArgAgentPermission = "permission"
+
+	// ArgAgentDryRun prints the fully-resolved manifest instead of creating a
+	// session.
+	ArgAgentDryRun = "dry-run"
+
+	// ArgAgentOnHITL is the fixed outcome (approve|reject|defer) applied to
+	// every approval request during an unattended `agents create`.
+	ArgAgentOnHITL = "on-hitl"
+
+	// ArgAgentHITLContent is a JSON object answering an MCP form elicitation's
+	// requestedSchema, passed to `agents approve` alongside the outcome.
+	ArgAgentHITLContent = "content"
+
+	// ArgAgentResumeOnTopoff opts a session in to automatic resumption when the
+	// team's prepayment balance is topped off after a low-balance pause. Set at
+	// create, or changed later on an existing session with `agents update`.
+	ArgAgentResumeOnTopoff = "resume-on-topoff"
+
+	// ArgAgentWorkspace names the persistent workspace a new session attaches.
+	// Per-session: never part of an agents.yaml manifest.
+	ArgAgentWorkspace = "workspace"
+
+	// ArgAgentWorkspaceSizeLimitGiB is the size, in GiB, of a new persistent workspace.
+	ArgAgentWorkspaceSizeLimitGiB = "size-limit-gib"
+
+	// ArgAgentWorkspaceState filters `workspace list` to one workspace state.
+	ArgAgentWorkspaceState = "state"
+
+	// ArgAgentIdempotencyKey makes a repeated `workspace create` return the
+	// first workspace instead of creating another.
+	ArgAgentIdempotencyKey = "idempotency-key"
+
+	// Gradient AI simulation args
+
+	// ArgGenAISearch filters a Gradient AI list by a free-text search term.
+	ArgGenAISearch = "search"
+
+	// ArgGenAISortBy is the field used to sort a Gradient AI list.
+	ArgGenAISortBy = "sort-by"
+
+	// ArgGenAISortDirection is the direction used to sort a Gradient AI list.
+	ArgGenAISortDirection = "sort-direction"
+
+	// ArgGenAIStatuses filters a Gradient AI list by status.
+	ArgGenAIStatuses = "statuses"
+
+	// ArgGenAIName is the name of a Gradient AI scenario set or simulation run.
+	ArgGenAIName = "name"
+
+	// ArgScenarioSetFile is the path to a local scenario file to upload.
+	ArgScenarioSetFile = "file"
+
+	// ArgScenarioSetScenarios is a JSON array of scenario objects.
+	ArgScenarioSetScenarios = "scenarios"
+
+	// ArgScenarioSetGoalDescription is the goal used to generate scenarios.
+	ArgScenarioSetGoalDescription = "goal-description"
+
+	// ArgScenarioSetNumScenarios is the number of scenarios to generate.
+	ArgScenarioSetNumScenarios = "num-scenarios"
+
+	// ArgScenarioSetGeneratorModelUUID is the model used to generate scenarios.
+	ArgScenarioSetGeneratorModelUUID = "generator-model-uuid"
+
+	// ArgScenarioSetSourceKinds filters scenario sets by source kind.
+	ArgScenarioSetSourceKinds = "source-kinds"
+
+	// ArgScenarioLibraryCategory filters scenario library entries by category.
+	ArgScenarioLibraryCategory = "category"
+
+	// ArgSimulationScenarioSetUUID is the UUID of the scenario set the run executes.
+	ArgSimulationScenarioSetUUID = "scenario-set-uuid"
+
+	// ArgSimulationAgentUUID is the UUID of the candidate agent under test.
+	ArgSimulationAgentUUID = "agent-uuid"
+
+	// ArgSimulationAgentDeploymentUUID is the deployment UUID of the candidate agent.
+	ArgSimulationAgentDeploymentUUID = "agent-deployment-uuid"
+
+	// ArgSimulationAgentName is the display name of the candidate agent.
+	ArgSimulationAgentName = "agent-name"
+
+	// ArgSimulationUserSimulatorModelUUID is the model that simulates the user.
+	ArgSimulationUserSimulatorModelUUID = "user-simulator-model-uuid"
+
+	// ArgSimulationJudgeModelUUID is the model that judges each episode.
+	ArgSimulationJudgeModelUUID = "judge-model-uuid"
+
+	// ArgSimulationUserSimulatorConfig is a JSON object of user simulator settings.
+	ArgSimulationUserSimulatorConfig = "user-simulator-config"
+
+	// ArgSimulationExplorationBudget is the exploration budget for the run.
+	ArgSimulationExplorationBudget = "exploration-budget"
+
+	// ArgSimulationMaxTurns is the maximum number of turns per episode.
+	ArgSimulationMaxTurns = "max-turns"
+
+	// ArgSimulationMetricUUIDs are the evaluation metrics attached to the run.
+	ArgSimulationMetricUUIDs = "metric-uuids"
+
+	// ArgSimulationStarMetricUUID is the UUID of the run's star metric.
+	ArgSimulationStarMetricUUID = "star-metric-uuid"
+
+	// ArgSimulationStarMetricName is the name of the run's star metric.
+	ArgSimulationStarMetricName = "star-metric-name"
+
+	// ArgSimulationStarMetricSuccessThreshold is the success threshold of the star metric.
+	ArgSimulationStarMetricSuccessThreshold = "star-metric-success-threshold"
+
+	// ArgSimulationScenarioUUID filters simulation episodes by scenario UUID.
+	ArgSimulationScenarioUUID = "scenario-uuid"
+
+	// ArgSimulationEpisodeVerdicts filters simulation episodes by verdict.
+	ArgSimulationEpisodeVerdicts = "verdicts"
+
+	// Model evaluation args
+
+	// ArgEvaluationCandidateModelUUID is the UUID of the candidate model under evaluation.
+	ArgEvaluationCandidateModelUUID = "candidate-model-uuid"
+
+	// ArgEvaluationCandidateModelName is the display name of the candidate model.
+	ArgEvaluationCandidateModelName = "candidate-model-name"
+
+	// ArgEvaluationCandidateModelSource is the source type of the candidate model.
+	ArgEvaluationCandidateModelSource = "candidate-model-source"
+
+	// ArgEvaluationCandidateInferenceConfig is a JSON object of candidate inference settings.
+	ArgEvaluationCandidateInferenceConfig = "candidate-inference-config"
+
+	// ArgEvaluationDatasetUUID is the UUID of the evaluation dataset.
+	ArgEvaluationDatasetUUID = "dataset-uuid"
+
+	// ArgEvaluationDatasetType filters or sets the evaluation dataset type.
+	ArgEvaluationDatasetType = "dataset-type"
+
+	// ArgEvaluationDatasetParadigm filters or sets the evaluation dataset paradigm.
+	ArgEvaluationDatasetParadigm = "dataset-paradigm"
+
+	// ArgEvaluationHasGroundTruth filters datasets by whether they include ground truth.
+	ArgEvaluationHasGroundTruth = "has-ground-truth"
+
+	// ArgEvaluationEvalPresetUUID is the UUID of a saved model evaluation preset.
+	ArgEvaluationEvalPresetUUID = "eval-preset-uuid"
+
+	// ArgEvaluationPresetName is the name used when saving a new evaluation preset.
+	ArgEvaluationPresetName = "preset-name"
+
+	// ArgEvaluationPresetSaveSections controls which sections are saved into a new preset.
+	ArgEvaluationPresetSaveSections = "preset-save-sections"
+
+	// ArgEvaluationEpochs is the number of times to evaluate each dataset row.
+	ArgEvaluationEpochs = "epochs"
+
+	// ArgEvaluationScoringPrompt is the LLM-as-judge scoring prompt for a custom metric.
+	ArgEvaluationScoringPrompt = "scoring-prompt"
+
+	// ArgEvaluationRequiresGroundTruth indicates whether a custom metric needs ground truth.
+	ArgEvaluationRequiresGroundTruth = "requires-ground-truth"
+
+	// ArgEvaluationTurnType is the single-turn vs multi-turn applicability of a metric.
+	ArgEvaluationTurnType = "turn-type"
+
+	// ArgEvaluationDescription is a free-text description for a custom metric.
+	ArgEvaluationDescription = "description"
+
+	// ArgEvaluationCandidateTypes filters model evaluation runs by candidate model source.
+	ArgEvaluationCandidateTypes = "candidate-types"
+
+	// Signals consent args
+
+	// ArgSignalsType selects the Signals source for session list / export create: agent or inference.
+	ArgSignalsType = "type"
+
+	// ArgSignalsAgentID is the agent ID for Signals consent and export commands.
+	// Deprecated: use ArgSignalsEnvironmentID.
+	ArgSignalsAgentID = "agent-id"
+
+	// ArgSignalsEnvironmentID is the environment ID for Signals commands.
+	ArgSignalsEnvironmentID = "environment-id"
+
+	// ArgSignalsEnabled sets consent enabled (true) or disabled (false).
+	ArgSignalsEnabled = "enabled"
+
+	// ArgSignalsConsentSource selects the consent source: agent (per agent) or
+	// inference (team-level, serverless inference).
+	ArgSignalsConsentSource = "source"
+
+	// Signals export args
+
+	// ArgSignalsExportID is the export job ID.
+	ArgSignalsExportID = "export-id"
+
+	// ArgSignalsExportLimit is the maximum number of exports to return.
+	ArgSignalsExportLimit = "limit"
+
+	// ArgSignalsExportAfter is an opaque pagination cursor.
+	ArgSignalsExportAfter = "after"
+
+	// ArgSignalsExportSignalType is POST /exports signal_type (repeatable).
+	ArgSignalsExportSignalType = "signal-type"
+
+	// ArgSignalsExportSessionIDs is an optional session cohort filter.
+	ArgSignalsExportSessionIDs = "session-ids"
+
+	// ArgSignalsExportStartTime is the start time filter (Unix epoch seconds).
+	ArgSignalsExportStartTime = "start-time"
+
+	// ArgSignalsExportEndTime is the end time filter (Unix epoch seconds).
+	ArgSignalsExportEndTime = "end-time"
+
+	// ArgSignalsExportConcerning limits the export to concerning segments.
+	ArgSignalsExportConcerning = "concerning"
+
+	// ArgSignalsExportSignalCategory is an optional signal category filter.
+	ArgSignalsExportSignalCategory = "signal-category"
+
+	// ArgSignalsExportSignalLayer is an optional signal layer filter.
+	ArgSignalsExportSignalLayer = "signal-layer"
+
+	// ArgSignalsDeletionType is the deletion type: agent or inference.
+	ArgSignalsDeletionType = "type"
+
+	// ArgSignalsTeamID is the numeric team id for deletion requests (optional; auto-detected).
+	ArgSignalsTeamID = "team-id"
+
+	// ArgSignalsSessionID is the session ID for Signals session commands.
+	ArgSignalsSessionID = "session-id"
+
+	// ArgInsightsAlertRuleID filters alert instances by alert rule ID.
+	ArgInsightsAlertRuleID = "rule-id"
+
+	// ArgInsightsQuery is a PromQL expression.
+	ArgInsightsQuery = "query"
+	// ArgInsightsTime is the evaluation time of an instant PromQL query.
+	ArgInsightsTime = "time"
+	// ArgInsightsStart is the start of a PromQL time range.
+	ArgInsightsStart = "start"
+	// ArgInsightsEnd is the end of a PromQL time range.
+	ArgInsightsEnd = "end"
+	// ArgInsightsStep is the resolution step of a PromQL range query.
+	ArgInsightsStep = "step"
+	// ArgInsightsMatch is a repeatable PromQL series selector.
+	ArgInsightsMatch = "match"
+
+	// ArgInsightsLogsFrom is the start of a logs search time range.
+	ArgInsightsLogsFrom = "from"
+	// ArgInsightsLogsTo is the end of a logs search time range.
+	ArgInsightsLogsTo = "to"
+	// ArgInsightsLogsFilter is an inline JSON logs filter expression.
+	ArgInsightsLogsFilter = "filter"
+	// ArgInsightsLogsFilterFile is a path to a JSON logs filter expression.
+	ArgInsightsLogsFilterFile = "filter-file"
+	// ArgInsightsLogsText is a substring searched across log records.
+	ArgInsightsLogsText = "text"
+	// ArgInsightsLogsOrderBy is a repeatable logs sort clause.
+	ArgInsightsLogsOrderBy = "order-by"
+	// ArgInsightsLogsLimit is the maximum number of log records to return.
+	ArgInsightsLogsLimit = "limit"
+	// ArgInsightsLogsCursor is a pagination cursor from a previous logs search.
+	ArgInsightsLogsCursor = "cursor"
+
+	// ArgInsightsTracingFrom is the start of a spans or traces search time range.
+	ArgInsightsTracingFrom = "from"
+	// ArgInsightsTracingTo is the end of a spans or traces search time range.
+	ArgInsightsTracingTo = "to"
+	// ArgInsightsTracingFilter is an inline JSON spans or traces filter expression.
+	ArgInsightsTracingFilter = "filter"
+	// ArgInsightsTracingFilterFile is a path to a JSON or YAML filter expression.
+	ArgInsightsTracingFilterFile = "filter-file"
+	// ArgInsightsTracingOrderBy is a repeatable spans or traces sort clause.
+	ArgInsightsTracingOrderBy = "order-by"
+	// ArgInsightsTracingLimit is the maximum number of spans or traces to return.
+	ArgInsightsTracingLimit = "limit"
+
+	// ArgInsightsResourceProductType filters Insights resources by product type.
+	ArgInsightsResourceProductType = "product-type"
+	// ArgInsightsResourceRegion filters or initializes an Insights resource's region.
+	ArgInsightsResourceRegion = "region"
+	// ArgInsightsResourceSort selects the field used to sort Insights resources.
+	ArgInsightsResourceSort = "sort"
+	// ArgInsightsResourceSortDirection selects the Insights resource sort direction.
+	ArgInsightsResourceSortDirection = "sort-direction"
+	// ArgInsightsResourceMetrics changes metrics enablement for an Insights resource.
+	ArgInsightsResourceMetrics = "metrics"
+	// ArgInsightsResourceLogs changes logs enablement for an Insights resource.
+	ArgInsightsResourceLogs = "logs"
+	// ArgInsightsResourceTraces changes traces enablement for an Insights resource.
+	ArgInsightsResourceTraces = "traces"
+
+	// ArgInsightsDashboardSpecFile is a path to a dashboard spec document.
+	ArgInsightsDashboardSpecFile = "spec-file"
+	// ArgInsightsDashboardSort selects the field used to sort Insights dashboards.
+	ArgInsightsDashboardSort = "sort"
+	// ArgInsightsDashboardSortDirection selects the Insights dashboard sort direction.
+	ArgInsightsDashboardSortDirection = "sort-direction"
 )

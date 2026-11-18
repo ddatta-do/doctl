@@ -14,25 +14,27 @@ limitations under the License.
 package commands
 
 import (
+	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/digitalocean/doctl"
-	"github.com/fatih/color"
+
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 )
 
 const (
-	defaultConfigName    = "config.yaml" // default name of config file
-	manageResourcesGroup = "manageResources"
-	configureDoctlGroup  = "configureDoctl"
-	viewBillingGroup     = "viewBilling"
+	defaultConfigName        = "config.yaml" // default name of config file
+	manageResourcesGroup     = "manageResources"
+	configureDoctlGroup      = "configureDoctl"
+	viewBillingGroup         = "viewBilling"
+	serverlessInferenceGroup = "serverlessInference"
+	hostedAgentsGroup        = "hostedAgents"
 )
 
 var (
@@ -41,6 +43,9 @@ var (
 		Command: &cobra.Command{
 			Use:   "doctl",
 			Short: "doctl is a command line interface (CLI) for the DigitalOcean API.",
+			// Args is left unset so that cobra keeps rejecting unknown
+			// subcommands; Run only fires when no subcommand was given.
+			Run: runWelcome,
 		},
 	}
 
@@ -60,23 +65,21 @@ var (
 	Verbose bool
 	//Interactive toggle interactive behavior
 	Interactive bool
+	//Show reveals values that are masked by default, such as secrets
+	Show bool
 
 	// Retry settings to pass through to godo.RetryConfig
 	RetryMax     int
 	RetryWaitMax int
 	RetryWaitMin int
-
-	requiredColor = color.New(color.Bold).SprintfFunc()
 )
 
 func init() {
 	var cfgFile string
 
-	initConfig()
-
 	rootPFlagSet := DoitCmd.PersistentFlags()
 	rootPFlagSet.StringVarP(&cfgFile, "config", "c",
-		filepath.Join(defaultConfigHome(), defaultConfigName), "Specify a custom config file")
+		"", "Specify a custom config file")
 	viper.BindPFlag("config", rootPFlagSet.Lookup("config"))
 
 	rootPFlagSet.StringVarP(&APIURL, "api-url", "u", "", "Override default API endpoint")
@@ -104,6 +107,8 @@ func init() {
 	}
 	rootPFlagSet.BoolVarP(&Interactive, doctl.ArgInteractive, "", interactive, interactiveHelpText)
 
+	rootPFlagSet.BoolVarP(&Show, doctl.ArgShow, "", false, "Reveal masked values, such as secrets, instead of hiding them. Values are unmasked automatically in CI")
+
 	rootPFlagSet.IntVar(&RetryMax, "http-retry-max", 5, "Set maximum number of retries for requests that fail with a 429 or 500-level error")
 	viper.BindPFlag("http-retry-max", rootPFlagSet.Lookup("http-retry-max"))
 
@@ -115,7 +120,17 @@ func init() {
 	viper.BindPFlag("http-retry-wait-min", rootPFlagSet.Lookup("http-retry-wait-min"))
 	DoitCmd.PersistentFlags().MarkHidden("http-retry-wait-min")
 
+	// Resolve the output policy once, after flags are parsed and config is
+	// read but before any command writes. Cobra runs the nearest
+	// PersistentPreRunE walking up from the command being executed, and no
+	// subcommand defines one, so this governs every invocation.
+	DoitCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		installOutputPolicy()
+		return nil
+	}
+
 	addCommands()
+	installHelpRenderer()
 
 	cobra.OnInitialize(initConfig)
 }
@@ -127,6 +142,10 @@ func initConfig() {
 	viper.SetConfigType("yaml")
 
 	cfgFile := viper.GetString("config")
+	if cfgFile == "" {
+		cfgFile = filepath.Join(defaultConfigHome(), defaultConfigName)
+		viper.Set("config", cfgFile)
+	}
 	viper.SetConfigFile(cfgFile)
 
 	viper.SetDefault("output", "text")
@@ -135,13 +154,13 @@ func initConfig() {
 
 	if _, err := os.Stat(cfgFile); err == nil {
 		if err := viper.ReadInConfig(); err != nil {
-			log.Fatalln("Config initialization failed:", err)
+			checkErr(fmt.Errorf("config initialization failed: %w", err))
 		}
 	}
 }
 
 // in case we ever want to change this, or let folks configure it...
-func defaultConfigHome() string {
+var defaultConfigHome = func() string {
 	cfgDir, err := os.UserConfigDir()
 	checkErr(err)
 
@@ -159,10 +178,23 @@ func configHome() string {
 // Execute executes the current command using DoitCmd.
 func Execute() {
 	if err := DoitCmd.Execute(); err != nil {
-		if !strings.Contains(err.Error(), "unknown command") {
-			fmt.Println(err)
+		// Unknown-command errors are already printed by Cobra/usage handling.
+		if strings.Contains(err.Error(), "unknown command") {
+			os.Exit(exitUsageError)
 		}
-		os.Exit(-1)
+		// Missing/invalid flags historically exited exitGeneralError via
+		// checkErr → errAction. Keep that for FlagValidationError; reserve
+		// exitUsageError for other top-level failures that never went
+		// through Run/checkErr.
+		var fv *FlagValidationError
+		if errors.As(err, &fv) {
+			checkErr(err)
+			return
+		}
+		prev := errAction
+		errAction = func() { os.Exit(exitUsageError) }
+		defer func() { errAction = prev }()
+		checkErr(err)
 	}
 }
 
@@ -170,6 +202,8 @@ func Execute() {
 func addCommands() {
 
 	DoitCmd.AddGroup(&cobra.Group{ID: manageResourcesGroup, Title: "Manage DigitalOcean Resources:"})
+	DoitCmd.AddGroup(&cobra.Group{ID: serverlessInferenceGroup, Title: "Inference:"})
+	DoitCmd.AddGroup(&cobra.Group{ID: hostedAgentsGroup, Title: "Managed Agents Runtime Services (M.A.R.S):"})
 	DoitCmd.AddGroup(&cobra.Group{ID: configureDoctlGroup, Title: "Configure doctl:"})
 	DoitCmd.AddGroup(&cobra.Group{ID: viewBillingGroup, Title: "View Billing:"})
 
@@ -178,17 +212,33 @@ func addCommands() {
 	DoitCmd.AddCommand(Auth())
 	DoitCmd.AddCommand(Balance())
 	DoitCmd.AddCommand(BillingHistory())
+	DoitCmd.AddCommand(Prepayment())
 	DoitCmd.AddCommand(Invoices())
 	DoitCmd.AddCommand(computeCmd())
 	DoitCmd.AddCommand(Kubernetes())
+	DoitCmd.AddCommand(KnowledgeBaseCmd())
 	DoitCmd.AddCommand(Databases())
+	DoitCmd.AddCommand(VectorDatabases())
 	DoitCmd.AddCommand(Projects())
 	DoitCmd.AddCommand(Version())
 	DoitCmd.AddCommand(Registry())
+	DoitCmd.AddCommand(Registries())
 	DoitCmd.AddCommand(VPCs())
+	DoitCmd.AddCommand(Network())
 	DoitCmd.AddCommand(OneClicks())
 	DoitCmd.AddCommand(Monitoring())
+	DoitCmd.AddCommand(Insights())
 	DoitCmd.AddCommand(Serverless())
+	DoitCmd.AddCommand(Spaces())
+	DoitCmd.AddCommand(GradientAI())
+	DoitCmd.AddCommand(Evaluation())
+	DoitCmd.AddCommand(DedicatedInferenceCmd())
+	DoitCmd.AddCommand(Inference())
+	DoitCmd.AddCommand(Nfs())
+	DoitCmd.AddCommand(Security())
+	DoitCmd.AddCommand(Agents())
+	DoitCmd.AddCommand(Secrets())
+	DoitCmd.AddCommand(Signals())
 }
 
 func computeCmd() *Command {
@@ -206,10 +256,14 @@ func computeCmd() *Command {
 	cmd.AddCommand(Certificate())
 	cmd.AddCommand(DropletAction())
 	cmd.AddCommand(Droplet())
+	cmd.AddCommand(DropletAutoscale())
 	cmd.AddCommand(Domain())
+	cmd.AddCommand(MicroVM())
+	cmd.AddCommand(VPCNATGateway())
 	cmd.AddCommand(Firewall())
 	cmd.AddCommand(ReservedIP())
 	cmd.AddCommand(ReservedIPAction())
+	cmd.AddCommand(ReservedIPv6())
 	cmd.AddCommand(Images())
 	cmd.AddCommand(ImageAction())
 	cmd.AddCommand(LoadBalancer())
@@ -233,13 +287,20 @@ type flagOpt func(c *Command, name, key string)
 
 func requiredOpt() flagOpt {
 	return func(c *Command, name, key string) {
-		c.MarkFlagRequired(key)
+		// Use doctl-owned metadata instead of cobra.MarkFlagRequired.
+		// Cobra's required check only looks at pflag.Changed, so it rejects
+		// flags whose value comes from a non-empty default or config.yaml —
+		// behavior doctl has long accepted via GetString/viper.
+		_ = c.Flags().SetAnnotation(name, annoFlagRequired, []string{"true"})
+		_ = c.Flags().SetAnnotation(name, annoFlagViperKey, []string{key})
 
-		key = fmt.Sprintf("required.%s", key)
-		viper.Set(key, true)
+		viper.Set(fmt.Sprintf("required.%s", key), true)
 
+		// Plain text: flag usage is built at registration time, before any
+		// color policy exists, and it is read back as prose by the flag
+		// validation error block.
 		u := c.Flag(name).Usage
-		c.Flag(name).Usage = fmt.Sprintf("%s %s", u, requiredColor("(required)"))
+		c.Flag(name).Usage = fmt.Sprintf("%s (required)", u)
 	}
 }
 
@@ -280,6 +341,17 @@ func AddIntFlag(cmd *Command, name, shorthand string, def int, desc string, opts
 	}
 }
 
+// AddFloatFlag adds an float flag to a command.
+func AddFloatFlag(cmd *Command, name, shorthand string, def float64, desc string, opts ...flagOpt) {
+	fn := flagName(cmd, name)
+	cmd.Flags().Float64P(name, shorthand, def, desc)
+	viper.BindPFlag(fn, cmd.Flags().Lookup(name))
+
+	for _, o := range opts {
+		o(cmd, name, fn)
+	}
+}
+
 // AddBoolFlag adds a boolean flag to a command.
 func AddBoolFlag(cmd *Command, name, shorthand string, def bool, desc string, opts ...flagOpt) {
 	fn := flagName(cmd, name)
@@ -295,6 +367,18 @@ func AddBoolFlag(cmd *Command, name, shorthand string, def bool, desc string, op
 func AddStringSliceFlag(cmd *Command, name, shorthand string, def []string, desc string, opts ...flagOpt) {
 	fn := flagName(cmd, name)
 	cmd.Flags().StringSliceP(name, shorthand, def, desc)
+	viper.BindPFlag(fn, cmd.Flags().Lookup(name))
+
+	for _, o := range opts {
+		o(cmd, name, fn)
+	}
+}
+
+// AddStringArrayFlag adds a repeatable string flag that preserves commas
+// within each value.
+func AddStringArrayFlag(cmd *Command, name, shorthand string, def []string, desc string, opts ...flagOpt) {
+	fn := flagName(cmd, name)
+	cmd.Flags().StringArrayP(name, shorthand, def, desc)
 	viper.BindPFlag(fn, cmd.Flags().Lookup(name))
 
 	for _, o := range opts {
@@ -322,6 +406,35 @@ func AddDurationFlag(cmd *Command, name, shorthand string, def time.Duration, de
 	for _, o := range opts {
 		o(cmd, name, fn)
 	}
+}
+
+// AddWaitFlags registers the --wait / --wait-timeout pair shared by every
+// command that polls a resource to completion. They are registered together
+// because the waiter reads the timeout from the command's own namespace: a
+// command offering --wait without --wait-timeout would silently fall back to
+// the default with no way for the user to extend it.
+func AddWaitFlags(cmd *Command, def bool, desc string) {
+	addWaitFlags(cmd, def, desc, defaultWaitTimeout)
+}
+
+// AddActionWaitFlags registers the pair for a command that waits on an action
+// rather than on a resource's status, which gets the longer default deadline
+// defaultActionWaitTimeout explains. The value is carried by the flag so that
+// --help states the deadline the command actually applies.
+func AddActionWaitFlags(cmd *Command, def bool, desc string) {
+	addWaitFlags(cmd, def, desc, defaultActionWaitTimeout)
+}
+
+// AddWaitFlagsWithTimeout registers the pair with a deadline of the command's
+// own choosing, for an operation whose usual duration is nothing like the
+// general default. --help states whichever deadline the command applies.
+func AddWaitFlagsWithTimeout(cmd *Command, def bool, desc string, timeout time.Duration) {
+	addWaitFlags(cmd, def, desc, timeout)
+}
+
+func addWaitFlags(cmd *Command, def bool, desc string, timeout time.Duration) {
+	AddBoolFlag(cmd, doctl.ArgCommandWait, "", def, desc)
+	AddDurationFlag(cmd, doctl.ArgWaitTimeout, "", timeout, waitTimeoutDesc)
 }
 
 func flagName(cmd *Command, name string) string {

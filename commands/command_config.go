@@ -16,25 +16,34 @@ package commands
 import (
 	"fmt"
 	"io"
+	"strings"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/commands/displayers"
 	"github.com/digitalocean/doctl/do"
 	"github.com/digitalocean/doctl/internal/apps/builder"
-	"github.com/spf13/viper"
+	"github.com/digitalocean/doctl/internal/ui"
 )
 
 // CmdConfig is a command configuration.
 type CmdConfig struct {
-	NS   string
-	Doit doctl.Config
-	Out  io.Writer
-	Args []string
+	NS      string
+	Doit    doctl.Config
+	Out     io.Writer
+	Args    []string
+	Command *cobra.Command
+
+	// UI carries the terminal capabilities for this invocation. Components
+	// should take it as an argument rather than deriving their own, so that a
+	// single policy governs color, animation, width, and ASCII fallback.
+	UI ui.Env
 
 	initServices            func(*CmdConfig) error
 	getContextAccessToken   func() string
 	setContextAccessToken   func(string)
-	removeContext           func(string) error
 	componentBuilderFactory builder.ComponentBuilderFactory
 
 	// services
@@ -44,34 +53,56 @@ type CmdConfig struct {
 	Images            func() do.ImagesService
 	ImageActions      func() do.ImageActionsService
 	LoadBalancers     func() do.LoadBalancersService
+	MicroVMs          func() do.MicroVMsService
 	ReservedIPs       func() do.ReservedIPsService
 	ReservedIPActions func() do.ReservedIPActionsService
-	Droplets          func() do.DropletsService
-	DropletActions    func() do.DropletActionsService
-	Domains           func() do.DomainsService
-	Actions           func() do.ActionsService
-	Account           func() do.AccountService
-	Balance           func() do.BalanceService
-	BillingHistory    func() do.BillingHistoryService
-	Invoices          func() do.InvoicesService
-	Tags              func() do.TagsService
-	UptimeChecks      func() do.UptimeChecksService
-	Volumes           func() do.VolumesService
-	VolumeActions     func() do.VolumeActionsService
-	Snapshots         func() do.SnapshotsService
-	Certificates      func() do.CertificatesService
-	Firewalls         func() do.FirewallsService
-	CDNs              func() do.CDNsService
-	Projects          func() do.ProjectsService
-	Kubernetes        func() do.KubernetesService
-	Databases         func() do.DatabasesService
-	Registry          func() do.RegistryService
-	VPCs              func() do.VPCsService
-	OneClicks         func() do.OneClickService
-	Apps              func() do.AppsService
-	Monitoring        func() do.MonitoringService
-	Serverless        func() do.ServerlessService
-	OAuth             func() do.OAuthService
+	ReservedIPv6s     func() do.ReservedIPv6sService
+	BYOIPPrefixes     func() do.BYOIPPrefixsService
+
+	Droplets            func() do.DropletsService
+	DropletActions      func() do.DropletActionsService
+	DropletAutoscale    func() do.DropletAutoscaleService
+	Domains             func() do.DomainsService
+	VPCNATGateways      func() do.VPCNATGatewaysService
+	Actions             func() do.ActionsService
+	Account             func() do.AccountService
+	Balance             func() do.BalanceService
+	BillingHistory      func() do.BillingHistoryService
+	Prepayment          func() do.PrepaymentService
+	Invoices            func() do.InvoicesService
+	Tags                func() do.TagsService
+	UptimeChecks        func() do.UptimeChecksService
+	Volumes             func() do.VolumesService
+	VolumeActions       func() do.VolumeActionsService
+	Snapshots           func() do.SnapshotsService
+	Certificates        func() do.CertificatesService
+	Firewalls           func() do.FirewallsService
+	CDNs                func() do.CDNsService
+	Projects            func() do.ProjectsService
+	Kubernetes          func() do.KubernetesService
+	Databases           func() do.DatabasesService
+	VectorDBs           func() do.VectorDBsService
+	Registry            func() do.RegistryService
+	Registries          func() do.RegistriesService
+	VPCs                func() do.VPCsService
+	OneClicks           func() do.OneClickService
+	Apps                func() do.AppsService
+	Monitoring          func() do.MonitoringService
+	Insights            func() do.InsightsService
+	Serverless          func() do.ServerlessService
+	OAuth               func() do.OAuthService
+	PartnerAttachments  func() do.PartnerAttachmentsService
+	SpacesKeys          func() do.SpacesKeysService
+	AgentPlatform       func() do.AgentPlatformService
+	DedicatedInferences func() do.DedicatedInferenceService
+	Inference           func() do.InferenceService
+	Nfs                 func() do.NfsService
+	NfsActions          func() do.NfsActionsService
+	Security            func() do.SecurityService
+	HostedAgents        func() do.HostedAgentsService
+	HostedAgentTriggers func() do.HostedAgentTriggersService
+	Secrets             func() do.SecretsService
+	Signals             func() do.SignalsService
 }
 
 // NewCmdConfig creates an instance of a CmdConfig.
@@ -82,12 +113,29 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 		Doit: dc,
 		Out:  out,
 		Args: args,
+		UI:   resolveUIEnv(out),
 
 		initServices: func(c *CmdConfig) error {
+			if err := refreshExpiredOAuthToken(c); err != nil {
+				return err
+			}
+
 			accessToken := c.getContextAccessToken()
-			godoClient, err := c.Doit.GetGodoClient(Trace, true, accessToken)
+
+			// Regional routing: the harness-runtime group's --region selects an
+			// API host (agents_region.go). This runs for every command, so the
+			// option is scoped there to that group — a `harness-runtime.region`
+			// entry in config.yaml must not reroute the rest of doctl.
+			// GetGodoClient applies it before --api-url so an explicit host
+			// still wins.
+			regionOpts, err := agentRegionClientOpts()
 			if err != nil {
-				return fmt.Errorf("Unable to initialize DigitalOcean API client: %s", err)
+				return err
+			}
+
+			godoClient, err := c.Doit.GetGodoClient(Trace, true, accessToken, regionOpts...)
+			if err != nil {
+				return fmt.Errorf("Unable to initialize DigitalOcean API client: %w", err)
 			}
 
 			c.Keys = func() do.KeysService { return do.NewKeysService(godoClient) }
@@ -97,13 +145,18 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 			c.ImageActions = func() do.ImageActionsService { return do.NewImageActionsService(godoClient) }
 			c.ReservedIPs = func() do.ReservedIPsService { return do.NewReservedIPsService(godoClient) }
 			c.ReservedIPActions = func() do.ReservedIPActionsService { return do.NewReservedIPActionsService(godoClient) }
+			c.ReservedIPv6s = func() do.ReservedIPv6sService { return do.NewReservedIPv6sService(godoClient) }
+			c.BYOIPPrefixes = func() do.BYOIPPrefixsService { return do.NewBYOIPPrefixService(godoClient) }
 			c.Droplets = func() do.DropletsService { return do.NewDropletsService(godoClient) }
 			c.DropletActions = func() do.DropletActionsService { return do.NewDropletActionsService(godoClient) }
+			c.DropletAutoscale = func() do.DropletAutoscaleService { return do.NewDropletAutoscaleService(godoClient) }
 			c.Domains = func() do.DomainsService { return do.NewDomainsService(godoClient) }
+			c.VPCNATGateways = func() do.VPCNATGatewaysService { return do.NewVPCNATGatewaysService(godoClient) }
 			c.Actions = func() do.ActionsService { return do.NewActionsService(godoClient) }
 			c.Account = func() do.AccountService { return do.NewAccountService(godoClient) }
 			c.Balance = func() do.BalanceService { return do.NewBalanceService(godoClient) }
 			c.BillingHistory = func() do.BillingHistoryService { return do.NewBillingHistoryService(godoClient) }
+			c.Prepayment = func() do.PrepaymentService { return do.NewPrepaymentService(godoClient) }
 			c.Invoices = func() do.InvoicesService { return do.NewInvoicesService(godoClient) }
 			c.Tags = func() do.TagsService { return do.NewTagsService(godoClient) }
 			c.UptimeChecks = func() do.UptimeChecksService { return do.NewUptimeChecksService(godoClient) }
@@ -117,16 +170,39 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 			c.Projects = func() do.ProjectsService { return do.NewProjectsService(godoClient) }
 			c.Kubernetes = func() do.KubernetesService { return do.NewKubernetesService(godoClient) }
 			c.Databases = func() do.DatabasesService { return do.NewDatabasesService(godoClient) }
+			c.VectorDBs = func() do.VectorDBsService { return do.NewVectorDBsService(godoClient) }
 			c.Registry = func() do.RegistryService { return do.NewRegistryService(godoClient) }
+			c.Registries = func() do.RegistriesService { return do.NewRegistriesService(godoClient) }
 			c.VPCs = func() do.VPCsService { return do.NewVPCsService(godoClient) }
 			c.OneClicks = func() do.OneClickService { return do.NewOneClickService(godoClient) }
 			c.Apps = func() do.AppsService { return do.NewAppsService(godoClient) }
 			c.Monitoring = func() do.MonitoringService { return do.NewMonitoringService(godoClient) }
+			c.Insights = func() do.InsightsService { return do.NewInsightsService(godoClient) }
 			c.Serverless = func() do.ServerlessService {
 				return do.NewServerlessService(godoClient, getServerlessDirectory(), accessToken)
 			}
 			c.OAuth = func() do.OAuthService { return do.NewOAuthService(godoClient) }
-
+			c.PartnerAttachments = func() do.PartnerAttachmentsService {
+				return do.NewPartnerAttachmentsService(godoClient)
+			}
+			c.SpacesKeys = func() do.SpacesKeysService { return do.NewSpacesKeysService(godoClient) }
+			c.AgentPlatform = func() do.AgentPlatformService { return do.NewAgentPlatformService(godoClient) }
+			c.DedicatedInferences = func() do.DedicatedInferenceService {
+				return do.NewDedicatedInferenceService(godoClient)
+			}
+			c.Inference = func() do.InferenceService {
+				return do.NewInferenceService(godoClient)
+			}
+			c.Nfs = func() do.NfsService { return do.NewNfsService(godoClient) }
+			c.NfsActions = func() do.NfsActionsService { return do.NewNfsActionsService(godoClient) }
+			c.MicroVMs = func() do.MicroVMsService { return do.NewMicroVMsService(godoClient) }
+			c.Security = func() do.SecurityService { return do.NewSecurityService(godoClient) }
+			c.HostedAgents = func() do.HostedAgentsService { return do.NewHostedAgentsService(godoClient) }
+			c.HostedAgentTriggers = func() do.HostedAgentTriggersService {
+				return do.NewHostedAgentTriggersService(godoClient)
+			}
+			c.Secrets = func() do.SecretsService { return do.NewSecretsService(godoClient) }
+			c.Signals = func() do.SignalsService { return do.NewSignalsService(godoClient) }
 			return nil
 		},
 
@@ -166,27 +242,6 @@ func NewCmdConfig(ns string, dc doctl.Config, out io.Writer, args []string, init
 			}
 		},
 
-		removeContext: func(context string) error {
-			if context == "default" {
-				viper.Set("access-token", "")
-				return nil
-			}
-
-			contexts := viper.GetStringMapString("auth-contexts")
-
-			_, ok := contexts[context]
-
-			if !ok {
-				return fmt.Errorf("Context not found")
-			}
-
-			delete(contexts, context)
-
-			viper.Set("auth-contexts", contexts)
-
-			return nil
-		},
-
 		componentBuilderFactory: &builder.DefaultComponentBuilderFactory{},
 	}
 
@@ -207,6 +262,7 @@ func (c *CmdConfig) Display(d displayers.Displayable) error {
 	dc := &displayers.Displayer{
 		Item: d,
 		Out:  c.Out,
+		UI:   c.UI,
 	}
 
 	columnList, err := c.Doit.GetString(c.NS, doctl.ArgFormat)
@@ -222,11 +278,103 @@ func (c *CmdConfig) Display(d displayers.Displayable) error {
 	dc.NoHeaders = withHeaders
 	dc.ColumnList = columnList
 	dc.OutputType = Output
+	// Only text is laid out as a card, and only a card has a footer, so the
+	// work of finding the next command is not done for output that discards
+	// it. Resolving it reads the resource through KV, which the JSON path has
+	// no other reason to call.
+	if dc.OutputType == "text" {
+		dc.Detail = isDetailNS(c.NS)
+		if dc.Detail {
+			dc.NextStep = nextStep(c.Command, d)
+		}
+	}
 
 	return dc.Display()
 }
 
-// An urner implements the URN method, wihich returns a valid uniform resource
+// nextStep suggests the command to run after this one: the get for the
+// resource just reported, which is where its full state lives.
+//
+// It is only offered when the command tree really has that get and the
+// resource really has an identifier to pass it. Anything missing falls back to
+// the help, which is where a user finds what this resource does support.
+func nextStep(cmd *cobra.Command, d displayers.Displayable) string {
+	// A get already shows what a get would show, so it suggests nothing
+	// rather than pointing at itself.
+	if cmd != nil && cmd.Name() == "get" {
+		return ""
+	}
+
+	get := getSibling(cmd)
+	id := resourceID(d)
+	if get == nil || id == "" {
+		return "doctl --help"
+	}
+
+	return get.CommandPath() + " " + id
+}
+
+// getSibling finds the get that belongs to the same resource as cmd - the
+// `get` next to the `create` that just ran. A hidden one is skipped: a
+// command the help does not list is not one to suggest.
+func getSibling(cmd *cobra.Command) *cobra.Command {
+	if cmd == nil || cmd.Parent() == nil {
+		return nil
+	}
+
+	for _, sibling := range cmd.Parent().Commands() {
+		if sibling.Name() == "get" && !sibling.Hidden {
+			return sibling
+		}
+	}
+
+	return nil
+}
+
+// resourceID is what the get needs to name the resource. ID is preferred
+// because it is unique; a name is accepted where that is all the resource
+// has, since doctl's gets take either.
+func resourceID(d displayers.Displayable) string {
+	kv := d.KV()
+	if len(kv) != 1 {
+		return ""
+	}
+
+	for _, key := range []string{"ID", "UUID", "Name"} {
+		if value, ok := kv[0][key]; ok {
+			if s := strings.TrimSpace(fmt.Sprint(value)); s != "" && s != "<nil>" {
+				return s
+			}
+		}
+	}
+
+	return ""
+}
+
+// detailVerbs name the commands that report a single resource, which a
+// terminal is shown as a card. Add to this rather than annotating each command.
+//
+// create earns a card for the same reason get does: it ends with one resource
+// the user is about to work with, and a card is how doctl presents one
+// resource. shouldCard still requires a single row, so creating several
+// Droplets in one command stays a table.
+var detailVerbs = map[string]bool{
+	"get":    true,
+	"create": true,
+}
+
+// isDetailNS reports whether ns names one of those commands. A namespace ends
+// in the command's own name - "droplet.get" - so the verb is its last segment.
+func isDetailNS(ns string) bool {
+	verb := ns
+	if i := strings.LastIndex(ns, "."); i >= 0 {
+		verb = ns[i+1:]
+	}
+
+	return detailVerbs[verb]
+}
+
+// An urner implements the URN method, which returns a valid uniform resource
 // name.
 type urner interface {
 	URN() string

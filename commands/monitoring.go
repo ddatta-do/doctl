@@ -30,7 +30,7 @@ func Monitoring() *Command {
 	cmd := &Command{
 		Command: &cobra.Command{
 			Use:   "monitoring",
-			Short: "[Beta] Display commands to manage monitoring",
+			Short: "Display commands to manage monitoring",
 			Long: `The sub-commands of ` + "`" + `doctl monitoring` + "`" + ` manage the monitoring on your account.
 
 You can create alert policies to monitor the resource consumption of your Droplets, and uptime checks to monitor the availability of your websites and services`,
@@ -430,16 +430,16 @@ func RunCmdAlertPolicyDelete(c *CmdConfig) error {
 		return err
 	}
 
-	if force || AskForConfirmDelete("alert policy", len(c.Args)) == nil {
-		for id := range c.Args {
-			uuid := c.Args[id]
-			ms := c.Monitoring()
-			if err := ms.DeleteAlertPolicy(uuid); err != nil {
-				return err
-			}
+	if err := confirmDelete(force, "alert policy", len(c.Args)); err != nil {
+		return err
+	}
+
+	for id := range c.Args {
+		uuid := c.Args[id]
+		ms := c.Monitoring()
+		if err := ms.DeleteAlertPolicy(uuid); err != nil {
+			return err
 		}
-	} else {
-		return errOperationAborted
 	}
 
 	return nil

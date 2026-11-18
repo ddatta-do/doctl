@@ -25,8 +25,10 @@ import (
 
 const (
 	// CNBBuilderImage represents the local cnb builder.
-	CNBBuilderImage_Heroku18 = "digitaloceanapps/cnb-local-builder:heroku-18_v0.65.0"
-	CNBBuilderImage_Heroku22 = "digitaloceanapps/cnb-local-builder:heroku-22_v0.65.0"
+	CNBBuilderImage_Heroku18 = "digitaloceanapps/cnb-local-builder:heroku-18_v0.73.1"
+	CNBBuilderImage_Heroku22 = "digitaloceanapps/cnb-local-builder:heroku-22_v0.97.0"
+
+	CNBAppsRunImage_Heroku18 = "digitaloceanapps/apps-run:heroku-18_c047ec7"
 
 	appVarAllowListKey = "APP_VARS"
 	appVarPrefix       = "APP_VAR_"
@@ -92,7 +94,7 @@ func (b *CNBComponentBuilder) Build(ctx context.Context) (res ComponentBuilderRe
 		})
 	}
 
-	if b.localCacheDir != "" {
+	if b.localCacheDir != "" && !b.baseComponentBuilder.noCache {
 		mounts = append(mounts, mount.Mount{
 			Type:   mount.TypeBind,
 			Source: b.localCacheDir,
@@ -348,7 +350,7 @@ func (b *CNBComponentBuilder) cnbEnv(ctx context.Context) ([]string, error) {
 		envs = append(envs, "PREVIOUS_APP_IMAGE_URL="+b.AppImageOutputName())
 	}
 
-	if b.localCacheDir != "" {
+	if b.localCacheDir != "" && !b.baseComponentBuilder.noCache {
 		envs = append(envs, "APP_CACHE_DIR="+cnbCacheDir)
 	}
 

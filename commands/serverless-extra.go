@@ -41,7 +41,7 @@ to choose your sample language for `+"`"+`doctl serverless init`+"`"+`.`,
 	deploy := CmdBuilder(cmd, RunServerlessExtraDeploy, "deploy <directory>", "Deploy a functions project to your functions namespace",
 		`At any time you can use `+"`"+`doctl serverless deploy`+"`"+` to upload the contents of a functions project in your file system for
 testing in your serverless namespace.  The project must be organized in the fashion expected by an App Platform Functions
-component.  The `+"`"+`doctl serverless init`+"`"+` command will create a properly organized directory for you to work in.`,
+component.  The `+"`"+`doctl serverless init`+"`"+` command will create a properly organized directory for you to work in. This command requires the `+"`"+`function:admin`+"`"+` scope on your API token.`,
 		Writer)
 	AddStringFlag(deploy, "env", "", "", "Path to runtime environment file")
 	AddStringFlag(deploy, "build-env", "", "", "Path to build-time environment file")
@@ -72,7 +72,7 @@ project (a directory you have designated for functions development).  This can b
 		`Type `+"`"+`doctl serverless watch <directory>`+"`"+` in a separate terminal window.  It will run until interrupted.
 It will watch the directory (which should be one you initialized for serverless development) and will deploy
 the contents to the cloud incrementally as it detects changes.`,
-		Writer)
+		Writer, noDefaultSuccess())
 	AddStringFlag(watch, "env", "", "", "Path to runtime environment file")
 	AddStringFlag(watch, "build-env", "", "", "Path to build-time environment file")
 	AddStringFlag(watch, "apihost", "", "", "API host to use")

@@ -116,7 +116,10 @@ func TestLoadBalancerCreate(t *testing.T) {
 				Deny:  []string{"cidr:1.2.0.0/16"},
 				Allow: []string{"ip:1.2.3.4", "ip:1.2.3.5"},
 			},
-			Network: "EXTERNAL",
+			Network:         "EXTERNAL",
+			NetworkStack:    "IPV4",
+			TLSCipherPolicy: "STRONG",
+			IP:              "203.0.113.5",
 		}
 		disableLetsEncryptDNSRecords := true
 		r.DisableLetsEncryptDNSRecords = &disableLetsEncryptDNSRecords
@@ -137,6 +140,62 @@ func TestLoadBalancerCreate(t *testing.T) {
 		config.Doit.Set(config.NS, doctl.ArgDenyList, []string{"cidr:1.2.0.0/16"})
 		config.Doit.Set(config.NS, doctl.ArgAllowList, []string{"ip:1.2.3.4", "ip:1.2.3.5"})
 		config.Doit.Set(config.NS, doctl.ArgLoadBalancerNetwork, "EXTERNAL")
+		config.Doit.Set(config.NS, doctl.ArgLoadBalancerNetworkStack, "IPV4")
+		config.Doit.Set(config.NS, doctl.ArgLoadBalancerTLSCipherPolicy, "STRONG")
+		config.Doit.Set(config.NS, doctl.ArgLoadBalancerIP, "203.0.113.5")
+
+		err := RunLoadBalancerCreate(config)
+		assert.NoError(t, err)
+	})
+}
+
+func TestLoadBalancerCreateWithSubnetUUID(t *testing.T) {
+	withTestClient(t, func(config *CmdConfig, tm *tcMocks) {
+		vpcUUID := "00000000-0000-4000-8000-000000000000"
+		subnetUUID := "3d6f6fdc-8b7e-49fd-a3c2-0d73ec4e40b4"
+		r := godo.LoadBalancerRequest{
+			Name:       "lb-name",
+			Region:     "nyc1",
+			SizeSlug:   "lb-small",
+			Type:       "REGIONAL",
+			DropletIDs: []int{1, 2},
+			StickySessions: &godo.StickySessions{
+				Type: "none",
+			},
+			HealthCheck: &godo.HealthCheck{
+				Protocol:               "http",
+				Port:                   80,
+				CheckIntervalSeconds:   4,
+				ResponseTimeoutSeconds: 23,
+				HealthyThreshold:       5,
+				UnhealthyThreshold:     10,
+			},
+			ForwardingRules: []godo.ForwardingRule{
+				{
+					EntryProtocol:  "tcp",
+					EntryPort:      3306,
+					TargetProtocol: "tcp",
+					TargetPort:     3306,
+					TlsPassthrough: true,
+				},
+			},
+			VPCUUID:       vpcUUID,
+			VPCSubnetUUID: subnetUUID,
+		}
+		disableLetsEncryptDNSRecords := false
+		r.DisableLetsEncryptDNSRecords = &disableLetsEncryptDNSRecords
+		tm.loadBalancers.EXPECT().Create(&r).Return(&testLoadBalancer, nil)
+
+		config.Doit.Set(config.NS, doctl.ArgRegionSlug, "nyc1")
+		config.Doit.Set(config.NS, doctl.ArgSizeSlug, "lb-small")
+		config.Doit.Set(config.NS, doctl.ArgLoadBalancerName, "lb-name")
+		config.Doit.Set(config.NS, doctl.ArgLoadBalancerType, "REGIONAL")
+		config.Doit.Set(config.NS, doctl.ArgVPCUUID, vpcUUID)
+		config.Doit.Set(config.NS, doctl.ArgSubnetUUID, subnetUUID)
+		config.Doit.Set(config.NS, doctl.ArgDropletIDs, []string{"1", "2"})
+		config.Doit.Set(config.NS, doctl.ArgStickySessions, "type:none")
+		config.Doit.Set(config.NS, doctl.ArgHealthCheck, "protocol:http,port:80,check_interval_seconds:4,response_timeout_seconds:23,healthy_threshold:5,unhealthy_threshold:10")
+		config.Doit.Set(config.NS, doctl.ArgForwardingRules, "entry_protocol:tcp,entry_port:3306,target_protocol:tcp,target_port:3306,tls_passthrough:true")
 
 		err := RunLoadBalancerCreate(config)
 		assert.NoError(t, err)
@@ -184,7 +243,8 @@ func TestLoadBalancerCreateGLB(t *testing.T) {
 				"019cb059-603f-4828-8be4-641a20f25006",
 				"023da268-bc81-468f-aa4d-9abdc4f69935",
 			},
-			Network: "EXTERNAL",
+			Network:      "EXTERNAL",
+			NetworkStack: "IPV4",
 		}
 		disableLetsEncryptDNSRecords := true
 		r.DisableLetsEncryptDNSRecords = &disableLetsEncryptDNSRecords
@@ -207,6 +267,7 @@ func TestLoadBalancerCreateGLB(t *testing.T) {
 			"023da268-bc81-468f-aa4d-9abdc4f69935",
 		})
 		config.Doit.Set(config.NS, doctl.ArgLoadBalancerNetwork, "EXTERNAL")
+		config.Doit.Set(config.NS, doctl.ArgLoadBalancerNetworkStack, "IPV4")
 
 		err := RunLoadBalancerCreate(config)
 		assert.NoError(t, err)

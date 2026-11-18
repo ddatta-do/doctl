@@ -14,8 +14,6 @@ limitations under the License.
 package commands
 
 import (
-	"fmt"
-
 	"github.com/digitalocean/doctl"
 	"github.com/digitalocean/doctl/commands/displayers"
 	"github.com/digitalocean/doctl/do"
@@ -51,7 +49,7 @@ With the VPC commands, you can list, create, or delete VPCs, and manage their co
 - The VPC network's creation date, in ISO8601 combined date and time format
 `
 
-	cmdVPCGet := CmdBuilder(cmd, RunVPCGet, "get <id>", "Retrieve a VPC network", "Retrieve information about a VPC network, including:"+vpcDetail, Writer,
+	cmdVPCGet := CmdBuilder(cmd, RunVPCGet, "get <vpc-id>", "Retrieve a VPC network", "Retrieve information about a VPC network, including:"+vpcDetail, Writer,
 		aliasOpt("g"), displayerType(&displayers.VPC{}))
 	cmdVPCGet.Example = `The following example retrieves information about a VPC network with the ID ` + "`" + `f81d4fae-7dec-11d0-a765-00a0c91e6bf6` + "`" + `: doctl vpcs get f81d4fae-7dec-11d0-a765-00a0c91e6bf6`
 
@@ -62,10 +60,11 @@ With the VPC commands, you can list, create, or delete VPCs, and manage their co
 	AddStringFlag(cmdRecordCreate, doctl.ArgVPCDescription, "", "", "A description of the VPC network")
 	AddStringFlag(cmdRecordCreate, doctl.ArgVPCIPRange, "", "",
 		"The range of IP addresses in the VPC network, in CIDR notation, such as `10.116.0.0/20`. If not specified, we generate a range for you.")
-	AddStringFlag(cmdRecordCreate, doctl.ArgRegionSlug, "", "", "The VPC network's region slug, such as `nyc1`", requiredOpt())
+	AddStringFlag(cmdRecordCreate, doctl.ArgRegionSlug, "", "", "The VPC network's region slug, such as `nyc1`", requiredOpt(),
+		flagHint("run doctl compute region list"))
 	cmdRecordCreate.Example = `The following example creates a VPC network named ` + "`" + `example-vpc` + "`" + ` in the ` + "`" + `nyc1` + "`" + ` region: doctl vpcs create --name example-vpc --region nyc1`
 
-	cmdRecordUpdate := CmdBuilder(cmd, RunVPCUpdate, "update <id>",
+	cmdRecordUpdate := CmdBuilder(cmd, RunVPCUpdate, "update <vpc-id>",
 		"Update a VPC network's configuration", `Updates a VPC network's configuration. You can update its name, description, and default state.`, Writer, aliasOpt("u"))
 	AddStringFlag(cmdRecordUpdate, doctl.ArgVPCName, "", "",
 		"The VPC network's name")
@@ -79,7 +78,7 @@ With the VPC commands, you can list, create, or delete VPCs, and manage their co
 		aliasOpt("ls"), displayerType(&displayers.VPC{}))
 	cmdVPCList.Example = `The following example lists the VPCs on your account and uses the --format flag to return only the name, IP range, and region for each VPC network: doctl vpcs list --format Name,IPRange,Region`
 
-	cmdRunRecordDelete := CmdBuilder(cmd, RunVPCDelete, "delete <id>",
+	cmdRunRecordDelete := CmdBuilder(cmd, RunVPCDelete, "delete <vpc-id>",
 		"Permanently delete a VPC network", `Permanently deletes the specified VPC. This is irreversible.
 		
 		You cannot delete VPCs that are default networks for a region. To delete a default VPC network, make another VPC network the default for the region using the `+"`"+`doctl vpcs update <vpc-network-id> --default=true`+"`"+` command, and then delete the target VPC network.`, Writer, aliasOpt("d", "rm"))
@@ -217,13 +216,13 @@ func RunVPCDelete(c *CmdConfig) error {
 		return err
 	}
 
-	if force || AskForConfirmDelete("VPC", 1) == nil {
-		vpcs := c.VPCs()
-		if err := vpcs.Delete(vpcUUID); err != nil {
-			return err
-		}
-	} else {
-		return fmt.Errorf("operation aborted")
+	if err := confirmDelete(force, "VPC", 1); err != nil {
+		return err
+	}
+
+	vpcs := c.VPCs()
+	if err := vpcs.Delete(vpcUUID); err != nil {
+		return err
 	}
 
 	return nil

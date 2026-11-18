@@ -69,6 +69,7 @@ var _ = suite("registry/repository/delete-tag", func(t *testing.T, when spec.G, 
 			"registry",
 			"repository",
 			"delete-tag",
+			"--registry", "my-registry",
 			"my-repo",
 			"my-tag",
 			"--force",
@@ -77,6 +78,6 @@ var _ = suite("registry/repository/delete-tag", func(t *testing.T, when spec.G, 
 		output, err := cmd.CombinedOutput()
 		expect.NoError(err)
 
-		expect.Equal("", strings.TrimSpace(string(output)))
+		expect.Empty(strings.TrimSpace(string(output)))
 	})
 })

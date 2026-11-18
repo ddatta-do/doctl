@@ -26,6 +26,14 @@ type Database struct {
 	*godo.Database
 }
 
+// DatabaseCA is a wrapper for godo.DatabaseCA
+type DatabaseCA struct {
+	*godo.DatabaseCA
+}
+
+// DatabaseCAs is a slice of DatabaseCA
+type DatabaseCAs []DatabaseCA
+
 // Databases is a slice of Database
 type Databases []Database
 
@@ -79,6 +87,11 @@ type DatabaseMaintenanceWindow struct {
 	*godo.DatabaseMaintenanceWindow
 }
 
+// DatabaseStorageAutoscale is a wrapper for godo.DatabaseStorageAutoscale
+type DatabaseStorageAutoscale struct {
+	*godo.DatabaseStorageAutoscale
+}
+
 // DatabaseFirewallRule is a wrapper for godo.DatabaseFirewallRule
 type DatabaseFirewallRule struct {
 	*godo.DatabaseFirewallRule
@@ -107,9 +120,39 @@ type PostgreSQLConfig struct {
 	*godo.PostgreSQLConfig
 }
 
+// AdvancedPostgresConfig is a wrapper for godo.AdvancedPostgresConfig
+type AdvancedPostgresConfig struct {
+	*godo.AdvancedPostgresConfig
+}
+
+// AdvancedMySQLConfig is a wrapper for godo.AdvancedMySQLConfig
+type AdvancedMySQLConfig struct {
+	*godo.AdvancedMySQLConfig
+}
+
 // RedisConfig is a wrapper for godo.RedisConfig
 type RedisConfig struct {
 	*godo.RedisConfig
+}
+
+// ValkeyConfig is a wrapper for godo.ValkeyConfig
+type ValkeyConfig struct {
+	*godo.ValkeyConfig
+}
+
+// MongoDBConfig is a wrapper for godo.MongoDBConfig
+type MongoDBConfig struct {
+	*godo.MongoDBConfig
+}
+
+// KafkaConfig is a wrapper for godo.KafkaConfig
+type KafkaConfig struct {
+	*godo.KafkaConfig
+}
+
+// OpensearchConfig is a wrapper for godo.OpensearchConfig
+type OpensearchConfig struct {
+	*godo.OpensearchConfig
 }
 
 // DatabaseTopics is a slice of DatabaseTopic
@@ -133,10 +176,19 @@ type DatabaseEvent struct {
 // DatabaseEvents is a slice of DatabaseEvent
 type DatabaseEvents []DatabaseEvent
 
+// DatabaseIndexes is a slice of DatabaseIndex
+type DatabaseIndexes []DatabaseIndex
+
+// DatabaseIndex is a wrapper for godo.DatabaseIndex
+type DatabaseIndex struct {
+	*godo.DatabaseIndex
+}
+
 // DatabasesService is an interface for interacting with DigitalOcean's Database API
 type DatabasesService interface {
 	List() (Databases, error)
 	Get(string) (*Database, error)
+	GetCA(string) (*DatabaseCA, error)
 	Create(*godo.DatabaseCreateRequest) (*Database, error)
 	Delete(string) error
 	GetConnection(string, bool) (*DatabaseConnection, error)
@@ -146,6 +198,10 @@ type DatabasesService interface {
 
 	GetMaintenance(string) (*DatabaseMaintenanceWindow, error)
 	UpdateMaintenance(string, *godo.DatabaseUpdateMaintenanceRequest) error
+	InstallUpdate(string) error
+
+	GetStorageAutoscale(string) (*DatabaseStorageAutoscale, error)
+	UpdateStorageAutoscale(string, *godo.DatabaseStorageAutoscale) error
 
 	GetUser(string, string) (*DatabaseUser, error)
 	ListUsers(string) (DatabaseUsers, error)
@@ -161,6 +217,7 @@ type DatabasesService interface {
 	ListPools(string) (DatabasePools, error)
 	CreatePool(string, *godo.DatabaseCreatePoolRequest) (*DatabasePool, error)
 	GetPool(string, string) (*DatabasePool, error)
+	UpdatePool(string, string, *godo.DatabaseUpdatePoolRequest) error
 	DeletePool(string, string) error
 
 	GetReplica(string, string) (*DatabaseReplica, error)
@@ -180,11 +237,23 @@ type DatabasesService interface {
 
 	GetMySQLConfiguration(databaseID string) (*MySQLConfig, error)
 	GetPostgreSQLConfiguration(databaseID string) (*PostgreSQLConfig, error)
+	GetAdvancedPostgresConfiguration(databaseID string) (*AdvancedPostgresConfig, error)
+	GetAdvancedMySQLConfiguration(databaseID string) (*AdvancedMySQLConfig, error)
 	GetRedisConfiguration(databaseID string) (*RedisConfig, error)
+	GetValkeyConfiguration(databaseID string) (*ValkeyConfig, error)
+	GetMongoDBConfiguration(databaseID string) (*MongoDBConfig, error)
+	GetKafkaConfiguration(databaseID string) (*KafkaConfig, error)
+	GetOpensearchConfiguration(databaseID string) (*OpensearchConfig, error)
 
 	UpdateMySQLConfiguration(databaseID string, confString string) error
 	UpdatePostgreSQLConfiguration(databaseID string, confString string) error
+	UpdateAdvancedPostgresConfiguration(databaseID string, confString string) error
+	UpdateAdvancedMySQLConfiguration(databaseID string, confString string) error
 	UpdateRedisConfiguration(databaseID string, confString string) error
+	UpdateValkeyConfiguration(databaseID string, confString string) error
+	UpdateMongoDBConfiguration(databaseID string, confString string) error
+	UpdateKafkaConfiguration(databaseID string, confString string) error
+	UpdateOpensearchConfiguration(databaseID string, confString string) error
 
 	ListTopics(string) (DatabaseTopics, error)
 	GetTopic(string, string) (*DatabaseTopic, error)
@@ -193,6 +262,9 @@ type DatabasesService interface {
 	DeleteTopic(string, string) error
 
 	ListDatabaseEvents(string) (DatabaseEvents, error)
+
+	ListIndexes(string) (DatabaseIndexes, error)
+	DeleteIndex(string, string) error
 }
 
 type databasesService struct {
@@ -243,6 +315,15 @@ func (ds *databasesService) Get(databaseID string) (*Database, error) {
 	}
 
 	return &Database{Database: db}, nil
+}
+
+func (ds *databasesService) GetCA(databaseID string) (*DatabaseCA, error) {
+	dbCA, _, err := ds.client.Databases.GetCA(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DatabaseCA{DatabaseCA: dbCA}, nil
 }
 
 func (ds *databasesService) Create(req *godo.DatabaseCreateRequest) (*Database, error) {
@@ -302,6 +383,27 @@ func (ds *databasesService) GetMaintenance(databaseID string) (*DatabaseMaintena
 
 func (ds *databasesService) UpdateMaintenance(databaseID string, req *godo.DatabaseUpdateMaintenanceRequest) error {
 	_, err := ds.client.Databases.UpdateMaintenance(context.TODO(), databaseID, req)
+
+	return err
+}
+
+func (ds *databasesService) InstallUpdate(databaseID string) error {
+	_, err := ds.client.Databases.InstallUpdate(context.TODO(), databaseID)
+
+	return err
+}
+
+func (ds *databasesService) GetStorageAutoscale(databaseID string) (*DatabaseStorageAutoscale, error) {
+	autoscale, _, err := ds.client.Databases.GetStorageAutoscale(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DatabaseStorageAutoscale{DatabaseStorageAutoscale: autoscale}, nil
+}
+
+func (ds *databasesService) UpdateStorageAutoscale(databaseID string, req *godo.DatabaseStorageAutoscale) error {
+	_, err := ds.client.Databases.UpdateStorageAutoscale(context.TODO(), databaseID, req)
 
 	return err
 }
@@ -492,6 +594,11 @@ func (ds *databasesService) GetPool(databaseID, poolName string) (*DatabasePool,
 	return &DatabasePool{DatabasePool: p}, nil
 }
 
+func (ds *databasesService) UpdatePool(databaseID, poolName string, req *godo.DatabaseUpdatePoolRequest) error {
+	_, err := ds.client.Databases.UpdatePool(context.TODO(), databaseID, poolName, req)
+	return err
+}
+
 func (ds *databasesService) DeletePool(databaseID, poolName string) error {
 	_, err := ds.client.Databases.DeletePool(context.TODO(), databaseID, poolName)
 
@@ -642,6 +749,28 @@ func (ds *databasesService) GetPostgreSQLConfiguration(databaseID string) (*Post
 	}, nil
 }
 
+func (ds *databasesService) GetAdvancedPostgresConfiguration(databaseID string) (*AdvancedPostgresConfig, error) {
+	cfg, _, err := ds.client.Databases.GetAdvancedPostgresSQLConfig(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AdvancedPostgresConfig{
+		AdvancedPostgresConfig: cfg,
+	}, nil
+}
+
+func (ds *databasesService) GetAdvancedMySQLConfiguration(databaseID string) (*AdvancedMySQLConfig, error) {
+	cfg, _, err := ds.client.Databases.GetAdvancedMySQLConfig(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &AdvancedMySQLConfig{
+		AdvancedMySQLConfig: cfg,
+	}, nil
+}
+
 func (ds *databasesService) GetRedisConfiguration(databaseID string) (*RedisConfig, error) {
 	cfg, _, err := ds.client.Databases.GetRedisConfig(context.TODO(), databaseID)
 	if err != nil {
@@ -650,6 +779,50 @@ func (ds *databasesService) GetRedisConfiguration(databaseID string) (*RedisConf
 
 	return &RedisConfig{
 		RedisConfig: cfg,
+	}, nil
+}
+
+func (ds *databasesService) GetValkeyConfiguration(databaseID string) (*ValkeyConfig, error) {
+	cfg, _, err := ds.client.Databases.GetValkeyConfig(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &ValkeyConfig{
+		ValkeyConfig: cfg,
+	}, nil
+}
+
+func (ds *databasesService) GetMongoDBConfiguration(databaseID string) (*MongoDBConfig, error) {
+	cfg, _, err := ds.client.Databases.GetMongoDBConfig(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &MongoDBConfig{
+		MongoDBConfig: cfg,
+	}, nil
+}
+
+func (ds *databasesService) GetKafkaConfiguration(databaseID string) (*KafkaConfig, error) {
+	cfg, _, err := ds.client.Databases.GetKafkaConfig(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &KafkaConfig{
+		KafkaConfig: cfg,
+	}, nil
+}
+
+func (ds *databasesService) GetOpensearchConfiguration(databaseID string) (*OpensearchConfig, error) {
+	cfg, _, err := ds.client.Databases.GetOpensearchConfig(context.TODO(), databaseID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &OpensearchConfig{
+		OpensearchConfig: cfg,
 	}, nil
 }
 
@@ -683,6 +856,36 @@ func (ds *databasesService) UpdatePostgreSQLConfiguration(databaseID string, con
 	return nil
 }
 
+func (ds *databasesService) UpdateAdvancedPostgresConfiguration(databaseID string, confString string) error {
+	var conf godo.AdvancedPostgresConfigUpdate
+	err := json.Unmarshal([]byte(confString), &conf)
+	if err != nil {
+		return err
+	}
+
+	_, err = ds.client.Databases.UpdateAdvancedPostgresSQLConfig(context.TODO(), databaseID, &conf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ds *databasesService) UpdateAdvancedMySQLConfiguration(databaseID string, confString string) error {
+	var conf godo.AdvancedMySQLConfigUpdate
+	err := json.Unmarshal([]byte(confString), &conf)
+	if err != nil {
+		return err
+	}
+
+	_, err = ds.client.Databases.UpdateAdvancedMySQLConfig(context.TODO(), databaseID, &conf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (ds *databasesService) UpdateRedisConfiguration(databaseID string, confString string) error {
 	var conf godo.RedisConfig
 	err := json.Unmarshal([]byte(confString), &conf)
@@ -691,6 +894,66 @@ func (ds *databasesService) UpdateRedisConfiguration(databaseID string, confStri
 	}
 
 	_, err = ds.client.Databases.UpdateRedisConfig(context.TODO(), databaseID, &conf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ds *databasesService) UpdateValkeyConfiguration(databaseID string, confString string) error {
+	var conf godo.ValkeyConfig
+	err := json.Unmarshal([]byte(confString), &conf)
+	if err != nil {
+		return err
+	}
+
+	_, err = ds.client.Databases.UpdateValkeyConfig(context.TODO(), databaseID, &conf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ds *databasesService) UpdateMongoDBConfiguration(databaseID string, confString string) error {
+	var conf godo.MongoDBConfig
+	err := json.Unmarshal([]byte(confString), &conf)
+	if err != nil {
+		return err
+	}
+
+	_, err = ds.client.Databases.UpdateMongoDBConfig(context.TODO(), databaseID, &conf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ds *databasesService) UpdateKafkaConfiguration(databaseID string, confString string) error {
+	var conf godo.KafkaConfig
+	err := json.Unmarshal([]byte(confString), &conf)
+	if err != nil {
+		return err
+	}
+
+	_, err = ds.client.Databases.UpdateKafkaConfig(context.TODO(), databaseID, &conf)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (ds *databasesService) UpdateOpensearchConfiguration(databaseID string, confString string) error {
+	var conf godo.OpensearchConfig
+	err := json.Unmarshal([]byte(confString), &conf)
+	if err != nil {
+		return err
+	}
+
+	_, err = ds.client.Databases.UpdateOpensearchConfig(context.TODO(), databaseID, &conf)
 	if err != nil {
 		return err
 	}
@@ -782,4 +1045,38 @@ func (ds *databasesService) ListDatabaseEvents(databaseID string) (DatabaseEvent
 		list[i] = DatabaseEvent{DatabaseEvent: &r}
 	}
 	return list, nil
+}
+
+func (ds *databasesService) ListIndexes(databaseID string) (DatabaseIndexes, error) {
+	f := func(opt *godo.ListOptions) ([]any, *godo.Response, error) {
+		list, resp, err := ds.client.Databases.ListIndexes(context.TODO(), databaseID, opt)
+		if err != nil {
+			return nil, nil, err
+		}
+
+		si := make([]any, len(list))
+		for i := range list {
+			si[i] = list[i]
+		}
+
+		return si, resp, err
+	}
+
+	si, err := PaginateResp(f)
+	if err != nil {
+		return nil, err
+	}
+
+	list := make(DatabaseIndexes, len(si))
+	for i := range si {
+		t := si[i].(godo.DatabaseIndex)
+		list[i] = DatabaseIndex{DatabaseIndex: &t}
+	}
+	return list, nil
+}
+
+func (ds *databasesService) DeleteIndex(databaseID, indexName string) error {
+	_, err := ds.client.Databases.DeleteIndex(context.TODO(), databaseID, indexName)
+
+	return err
 }

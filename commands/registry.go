@@ -66,17 +66,13 @@ func Registry() *Command {
 		},
 	}
 
-	cmd.AddCommand(Repository())
-	cmd.AddCommand(GarbageCollection())
-	cmd.AddCommand(RegistryOptions())
-
 	createRegDesc := "Creates a new private container registry with the provided name."
 	cmdRunRegistryCreate := CmdBuilder(cmd, RunRegistryCreate, "create <registry-name>",
 		"Create a private container registry", createRegDesc, Writer)
 	AddStringFlag(cmdRunRegistryCreate, doctl.ArgSubscriptionTier, "", "basic",
 		"Subscription tier for the new registry. For a list of possible values, use the `doctl registry options subscription-tiers` command.", requiredOpt())
 	AddStringFlag(cmdRunRegistryCreate, doctl.ArgRegionSlug, "", "",
-		"A slug indicating which datacenter region the registry reside in. For a list of supported region slugs, use the `doctl registry options available-regions` command")
+		"A `slug` indicating which datacenter region the registry reside in. For a list of supported region slugs, use the `doctl registry options available-regions` command")
 	cmdRunRegistryCreate.Example = `The following example creates a registry named ` + "`" + `example-registry` + "`" + ` in the NYC3 region: doctl registry create example-registry --region=nyc3`
 
 	getRegDesc := "Retrieves details about a private container registry, including its name and the endpoint used to access it."
@@ -136,6 +132,10 @@ By default this command generates read-only credentials. Use the ` + "`" + `--re
 		"The length of time the registry credentials are valid for, in seconds. By default, the credentials do not expire.")
 	cmdRunDockerConfig.Example = `The following example generates a Docker configuration for a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--expiry-seconds` + "`" + ` to set the credentials to expire after one day: doctl registry docker-config example-registry --expiry-seconds=86400`
 
+	cmd.AddCommand(Repository())
+	cmd.AddCommand(GarbageCollection())
+	cmd.AddCommand(RegistryOptions())
+
 	return cmd
 }
 
@@ -149,6 +149,8 @@ func Repository() *Command {
 			Long:    "The subcommands of `doctl registry repository` allow you to manage various properties of your repository.",
 		},
 	}
+
+	overrideNS := "registry.repository"
 
 	listRepositoriesDesc := `Retrieves information about repositories in a registry, including:
   - The repository name
@@ -164,7 +166,9 @@ func Repository() *Command {
 		Writer, aliasOpt("ls"), displayerType(&displayers.Repository{}),
 		hiddenCmd(),
 	)
-	cmdListRepositories.Example = `The following example lists repositories in a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--format` + "`" + ` flag to return only the name and update time of each repository: doctl registry repository list example-registry --format Name,UpdatedAt`
+	cmdListRepositories.overrideNS = overrideNS
+	addRegistryFlag(cmdListRepositories)
+	cmdListRepositories.Example = `The following example lists repositories in a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--format` + "`" + ` flag to return only the name and update time of each repository: doctl registry repository list --format Name,UpdatedAt`
 
 	listRepositoriesV2Desc := `Retrieves information about repositories in a registry, including:
   - The repository name
@@ -173,14 +177,15 @@ func Repository() *Command {
   - The number of tags in the repository
   - The number of manifests in the repository
 `
-
 	cmdListRepositoriesV2 := CmdBuilder(
 		cmd,
 		RunListRepositoriesV2, "list-v2",
 		"List repositories for a container registry", listRepositoriesV2Desc,
 		Writer, aliasOpt("ls2"), displayerType(&displayers.Repository{}),
 	)
-	cmdListRepositoriesV2.Example = `The following example lists repositories in a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--format` + "`" + ` flag to return only the name and update time of each repository: doctl registry repository list-v2 example-registry --format Name,UpdatedAt`
+	cmdListRepositoriesV2.overrideNS = overrideNS
+	addRegistryFlag(cmdListRepositoriesV2)
+	cmdListRepositoriesV2.Example = `The following example lists repositories in a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--format` + "`" + ` flag to return only the name and update time of each repository: doctl registry repository list-v2 --format Name,UpdatedAt`
 
 	listRepositoryTagsDesc := `Retrieves information about tags in a repository, including:
   - The tag name
@@ -194,7 +199,9 @@ func Repository() *Command {
 		"List tags for a repository in a container registry", listRepositoryTagsDesc,
 		Writer, aliasOpt("lt"), displayerType(&displayers.RepositoryTag{}),
 	)
-	cmdListRepositoryTags.Example = `The following example lists tags in a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return only the tag name and manifest digest for each tag: doctl registry repository list-tags example-registry/example-repository --format Tag,ManifestDigest`
+	cmdListRepositoryTags.overrideNS = overrideNS
+	addRegistryFlag(cmdListRepositoryTags)
+	cmdListRepositoryTags.Example = `The following example lists tags in a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return only the tag name and manifest digest for each tag: doctl registry repository list-tags example-repository --format Tag,ManifestDigest`
 
 	deleteTagDesc := "Permanently deletes one or more repository tags."
 	cmdRunRepositoryDeleteTag := CmdBuilder(
@@ -206,8 +213,10 @@ func Repository() *Command {
 		Writer,
 		aliasOpt("dt"),
 	)
+	cmdRunRepositoryDeleteTag.overrideNS = overrideNS
+	addRegistryFlag(cmdRunRepositoryDeleteTag)
 	AddBoolFlag(cmdRunRepositoryDeleteTag, doctl.ArgForce, doctl.ArgShortForce, false, "Delete tag without confirmation prompt")
-	cmdRunRepositoryDeleteTag.Example = `The following example deletes a tag named ` + "`" + `web` + "`" + ` from a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `: doctl registry repository delete-tag example-registry/example-repository web`
+	cmdRunRepositoryDeleteTag.Example = `The following example deletes a tag named ` + "`" + `web` + "`" + ` from a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `: doctl registry repository delete-tag example-repository web`
 
 	listRepositoryManifests := `Retrieves information about manifests in a repository, including:
   - The manifest digest
@@ -223,6 +232,8 @@ func Repository() *Command {
 		"List manifests for a repository in a container registry", listRepositoryManifests,
 		Writer, aliasOpt("lm"), displayerType(&displayers.RepositoryManifest{}),
 	)
+	cmdListRepositoryManifests.overrideNS = overrideNS
+	addRegistryFlag(cmdListRepositoryManifests)
 	cmdListRepositoryManifests.Example = `The following example lists manifests in a repository named ` + "`" + `example-repository` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return only the digest and update time for each manifest: doctl registry repository list-manifests example-repository --format Digest,UpdatedAt`
 
 	deleteManifestDesc := "Permanently deletes one or more repository manifests by digest."
@@ -235,10 +246,17 @@ func Repository() *Command {
 		Writer,
 		aliasOpt("dm"),
 	)
+	cmdRunRepositoryDeleteManifest.overrideNS = overrideNS
+	addRegistryFlag(cmdRunRepositoryDeleteManifest)
 	AddBoolFlag(cmdRunRepositoryDeleteManifest, doctl.ArgForce, doctl.ArgShortForce, false, "Deletes manifest without confirmation prompt")
-	cmdRunRepositoryDeleteManifest.Example = `The following example deletes a manifest with digest ` + "`" + `sha256:1234567890abcdef` + "`" + ` from a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `: doctl registry repository delete-manifest example-registry/example-repository sha256:a67c20e45178d90cbe686575719bd81f279b06842dc77521690e292c1eea685`
+	cmdRunRepositoryDeleteManifest.Example = `The following example deletes a manifest with digest ` + "`" + `sha256:1234567890abcdef` + "`" + ` from a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `: doctl registry repository delete-manifest example-repository sha256:a67c20e45178d90cbe686575719bd81f279b06842dc77521690e292c1eea685`
 
 	return cmd
+}
+
+func addRegistryFlag(cmd *Command) {
+	AddStringFlag(cmd, doctl.ArgRegistry, "", "",
+		"Name of the registry that the repository belongs to. For a list of possible values, use the 'doctl registries list' command. This is optional and only needed if you have multiple registries.")
 }
 
 // GarbageCollection creates the garbage-collection subcommand
@@ -252,6 +270,8 @@ func GarbageCollection() *Command {
 		},
 	}
 
+	overrideNS := "registry.garbage-collection"
+
 	runStartGarbageCollectionDesc := "Starts a garbage collection on a container registry. You can only have one active garbage collection at a time for a given registry."
 	cmdStartGarbageCollection := CmdBuilder(
 		cmd,
@@ -263,6 +283,7 @@ func GarbageCollection() *Command {
 		aliasOpt("s"),
 		displayerType(&displayers.GarbageCollection{}),
 	)
+	cmdStartGarbageCollection.overrideNS = overrideNS
 	AddBoolFlag(cmdStartGarbageCollection, doctl.ArgGCIncludeUntaggedManifests, "", false,
 		"Include untagged manifests in garbage collection.")
 	AddBoolFlag(cmdStartGarbageCollection, doctl.ArgGCExcludeUnreferencedBlobs, "", false,
@@ -291,7 +312,10 @@ func GarbageCollection() *Command {
 		aliasOpt("ga", "g"),
 		displayerType(&displayers.GarbageCollection{}),
 	)
-	cmdGetGarbageCollection.Example = `The following example retrieves the currently-active garbage collection for a registry: doctl registry garbage-collection get-active`
+	cmdGetGarbageCollection.overrideNS = overrideNS
+	cmdGetGarbageCollection.Example = `The following example retrieves the currently-active garbage collection for a registry: doctl registry garbage-collection get-active
+	
+The following example retrieves the currently-active garbage collection for a registry named ` + "`" + `example-registry` + "`" + `: doctl registry garbage-collection get-active example-registry`
 
 	runListGarbageCollectionsDesc := "Retrieves a list of past garbage collections for a registry. Information about each garbage collection includes:" + gcInfoIncluded
 	cmdListGarbageCollections := CmdBuilder(
@@ -304,7 +328,10 @@ func GarbageCollection() *Command {
 		aliasOpt("ls", "l"),
 		displayerType(&displayers.GarbageCollection{}),
 	)
-	cmdListGarbageCollections.Example = `The following example retrieves a list of past garbage collections for a registry: doctl registry garbage-collection list`
+	cmdListGarbageCollections.overrideNS = overrideNS
+	cmdListGarbageCollections.Example = `The following example retrieves a list of past garbage collections for a registry: doctl registry garbage-collection list
+	
+The following example retrieves a list of past garbage collections for a registry named ` + "`" + `example-registry` + "`" + `: doctl registry garbage-collection list example-registry`
 
 	runCancelGarbageCollectionDesc := "Cancels the currently-active garbage collection for a container registry."
 	cmdCancelGarbageCollection := CmdBuilder(
@@ -316,7 +343,10 @@ func GarbageCollection() *Command {
 		Writer,
 		aliasOpt("c"),
 	)
-	cmdCancelGarbageCollection.Example = `The following example cancels the currently-active garbage collection for a registry: doctl registry garbage-collection cancel`
+	cmdCancelGarbageCollection.overrideNS = overrideNS
+	cmdCancelGarbageCollection.Example = `The following example cancels the garbage collection with the uuid` + "`" + `gc-uuid` + "`" + `for a registry: doctl registry garbage-collection cancel gc-uuid
+	
+The following example cancels the garbage collection with the uuid ` + "`" + `gc-uuid` + "`" + ` for a registry named ` + "`" + `example-registry` + "`" + `: doctl registry garbage-collection cancel example-registry gc-uuid`
 
 	return cmd
 }
@@ -332,10 +362,14 @@ func RegistryOptions() *Command {
 		},
 	}
 
+	overrideNS := "registry.options"
+
 	tiersDesc := "Lists available container registry subscription tiers"
-	CmdBuilder(cmd, RunRegistryOptionsTiers, "subscription-tiers", tiersDesc, tiersDesc, Writer, aliasOpt("tiers"))
+	cmdRegistryOptionTiers := CmdBuilder(cmd, RunRegistryOptionsTiers, "subscription-tiers", tiersDesc, tiersDesc, Writer, aliasOpt("tiers"))
+	cmdRegistryOptionTiers.overrideNS = overrideNS
 	regionsDesc := "Lists available container registry regions"
-	CmdBuilder(cmd, RunGetRegistryOptionsRegions, "available-regions", regionsDesc, regionsDesc, Writer, aliasOpt("regions"))
+	cmdGetRegistryOptionsRegions := CmdBuilder(cmd, RunGetRegistryOptionsRegions, "available-regions", regionsDesc, regionsDesc, Writer, aliasOpt("regions"))
+	cmdGetRegistryOptionsRegions.overrideNS = overrideNS
 
 	return cmd
 }
@@ -378,6 +412,18 @@ func RunRegistryCreate(c *CmdConfig) error {
 func RunRegistryGet(c *CmdConfig) error {
 	reg, err := c.Registry().Get()
 	if err != nil {
+		if is412Error(err) {
+			// List available registries to show in the error message
+			registries, listErr := c.Registry().List()
+			if listErr == nil && len(registries) > 0 {
+				names := make([]string, len(registries))
+				for i, r := range registries {
+					names[i] = r.Name
+				}
+				return fmt.Errorf("multiple registries found. Please use 'doctl registries get <registry-name>' instead.\nAvailable registries: %s", strings.Join(names, ", "))
+			}
+			return fmt.Errorf("multiple registries found. Please use 'doctl registries get <registry-name>' instead")
+		}
 		return err
 	}
 
@@ -391,8 +437,8 @@ func RunRegistryDelete(c *CmdConfig) error {
 		return err
 	}
 
-	if !force && AskForConfirm("delete registry") != nil {
-		return fmt.Errorf("operation aborted")
+	if err := confirmAction(force, "delete registry"); err != nil {
+		return err
 	}
 
 	return c.Registry().Delete()
@@ -430,7 +476,7 @@ func RunRegistryLogin(c *CmdConfig) error {
 		regCredReq.ExpirySeconds = nil
 	}
 
-	fmt.Printf("Logging Docker in to %s\n", c.Registry().Endpoint())
+	fmt.Fprintf(c.Out, "Logging Docker in to %s\n", c.Registry().Endpoint())
 	creds, err := c.Registry().DockerCredentials(&regCredReq)
 	if err != nil {
 		return err
@@ -584,7 +630,7 @@ func RunRegistryLogout(c *CmdConfig) error {
 	}
 
 	server := c.Registry().Endpoint()
-	fmt.Printf("Removing login credentials for %s\n", server)
+	fmt.Fprintf(c.Out, "Removing login credentials for %s\n", server)
 
 	cf := dockerconf.LoadDefaultConfigFile(os.Stderr)
 	dockerCreds := cf.GetCredentialsStore(server)
@@ -611,12 +657,12 @@ func RunRegistryLogout(c *CmdConfig) error {
 
 // RunListRepositories lists repositories for the registry
 func RunListRepositories(c *CmdConfig) error {
-	registry, err := c.Registry().Get()
+	registryName, err := getRegistryNameWithFallback(c)
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		return err
 	}
 
-	repositories, err := c.Registry().ListRepositories(registry.Name)
+	repositories, err := c.Registry().ListRepositories(registryName)
 	if err != nil {
 		return err
 	}
@@ -626,12 +672,12 @@ func RunListRepositories(c *CmdConfig) error {
 
 // RunListRepositoriesV2 lists repositories for the registry
 func RunListRepositoriesV2(c *CmdConfig) error {
-	registry, err := c.Registry().Get()
+	registryName, err := getRegistryNameWithFallback(c)
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		return err
 	}
 
-	repositories, err := c.Registry().ListRepositoriesV2(registry.Name)
+	repositories, err := c.Registry().ListRepositoriesV2(registryName)
 	if err != nil {
 		return err
 	}
@@ -646,12 +692,12 @@ func RunListRepositoryTags(c *CmdConfig) error {
 		return err
 	}
 
-	registry, err := c.Registry().Get()
+	registryName, err := getRegistryNameWithFallback(c)
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		return err
 	}
 
-	tags, err := c.Registry().ListRepositoryTags(registry.Name, c.Args[0])
+	tags, err := c.Registry().ListRepositoryTags(registryName, c.Args[0])
 	if err != nil {
 		return err
 	}
@@ -666,12 +712,12 @@ func RunListRepositoryManifests(c *CmdConfig) error {
 		return err
 	}
 
-	registry, err := c.Registry().Get()
+	registryName, err := getRegistryNameWithFallback(c)
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		return err
 	}
 
-	manifests, err := c.Registry().ListRepositoryManifests(registry.Name, c.Args[0])
+	manifests, err := c.Registry().ListRepositoryManifests(registryName, c.Args[0])
 	if err != nil {
 		return err
 	}
@@ -690,21 +736,21 @@ func RunRepositoryDeleteTag(c *CmdConfig) error {
 		return doctl.NewMissingArgsErr(c.NS)
 	}
 
-	registry, err := c.Registry().Get()
+	registryName, err := getRegistryNameWithFallback(c)
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		return err
 	}
 
 	repository := c.Args[0]
 	tags := c.Args[1:]
 
-	if !force && AskForConfirm(fmt.Sprintf("delete %d repository tag(s)", len(tags))) != nil {
-		return fmt.Errorf("operation aborted")
+	if err := confirmAction(force, fmt.Sprintf("delete %d repository tag(s)", len(tags))); err != nil {
+		return err
 	}
 
 	var errors []string
 	for _, tag := range tags {
-		if err := c.Registry().DeleteTag(registry.Name, repository, tag); err != nil {
+		if err := c.Registry().DeleteTag(registryName, repository, tag); err != nil {
 			errors = append(errors, err.Error())
 		}
 	}
@@ -727,21 +773,21 @@ func RunRepositoryDeleteManifest(c *CmdConfig) error {
 		return doctl.NewMissingArgsErr(c.NS)
 	}
 
-	registry, err := c.Registry().Get()
+	registryName, err := getRegistryNameWithFallback(c)
 	if err != nil {
-		return fmt.Errorf("failed to get registry: %w", err)
+		return err
 	}
 
 	repository := c.Args[0]
 	digests := c.Args[1:]
 
-	if !force && AskForConfirm(fmt.Sprintf("delete %d repository manifest(s) by digest (including associated tags)", len(digests))) != nil {
-		return fmt.Errorf("operation aborted")
+	if err := confirmAction(force, fmt.Sprintf("delete %d repository manifest(s) by digest (including associated tags)", len(digests))); err != nil {
+		return err
 	}
 
 	var errors []string
 	for _, digest := range digests {
-		if err := c.Registry().DeleteManifest(registry.Name, repository, digest); err != nil {
+		if err := c.Registry().DeleteManifest(registryName, repository, digest); err != nil {
 			errors = append(errors, err.Error())
 		}
 	}
@@ -751,6 +797,82 @@ func RunRepositoryDeleteManifest(c *CmdConfig) error {
 	}
 
 	return nil
+}
+
+// is412Error checks if an error is a 412 (Precondition Failed) response, which indicates
+// multiple registries exist and a specific registry name is required
+func is412Error(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check if it's a godo ErrorResponse with status 412
+	if errResp, ok := err.(*godo.ErrorResponse); ok {
+		return errResp.Response != nil && errResp.Response.StatusCode == 412
+	}
+	return false
+}
+
+// getRegistryNameWithFallback attempts to get a registry name from the flag first.
+// If not provided, it falls back to using c.Registry().Get(), but provides a helpful
+// error message if that fails due to multiple registries (412 error).
+func getRegistryNameWithFallback(c *CmdConfig) (string, error) {
+	registryName, err := c.Doit.GetString(c.NS, doctl.ArgRegistry)
+	if err != nil {
+		return "", err
+	}
+
+	if registryName != "" {
+		return registryName, nil
+	}
+
+	// No registry name provided, try to get the default registry
+	registry, err := c.Registry().Get()
+	if err != nil {
+		if is412Error(err) {
+			// List available registries to show in the error message
+			registries, listErr := c.Registry().List()
+			if listErr == nil && len(registries) > 0 {
+				names := make([]string, len(registries))
+				for i, r := range registries {
+					names[i] = r.Name
+				}
+				return "", fmt.Errorf("multiple registries found. Please specify one with --registry <name>.\nAvailable registries: %s", strings.Join(names, ", "))
+			}
+			return "", fmt.Errorf("multiple registries found. Please specify one with --registry <name>")
+		}
+		return "", fmt.Errorf("failed to get registry: %w", err)
+	}
+
+	return registry.Name, nil
+}
+
+// getRegistryNameFromArgs gets a registry name from command line args if provided,
+// otherwise falls back to getting the default registry. This is used by commands
+// that accept an optional positional registry argument.
+func getRegistryNameFromArgs(c *CmdConfig, args []string, argIndex int) (string, error) {
+	if len(args) > argIndex && args[argIndex] != "" {
+		return args[argIndex], nil
+	}
+
+	// No registry name in args, try to get the default registry
+	registry, err := c.Registry().Get()
+	if err != nil {
+		if is412Error(err) {
+			// List available registries to show in the error message
+			registries, listErr := c.Registry().List()
+			if listErr == nil && len(registries) > 0 {
+				names := make([]string, len(registries))
+				for i, r := range registries {
+					names[i] = r.Name
+				}
+				return "", fmt.Errorf("multiple registries found. Please specify registry as an argument.\nAvailable registries: %s", strings.Join(names, ", "))
+			}
+			return "", fmt.Errorf("multiple registries found. Please specify registry as an argument")
+		}
+		return "", fmt.Errorf("failed to get registry: %w", err)
+	}
+
+	return registry.Name, nil
 }
 
 func displayRegistries(c *CmdConfig, registries ...do.Registry) error {
@@ -794,16 +916,15 @@ func displayRepositoryManifests(c *CmdConfig, manifests ...do.RepositoryManifest
 // registry.
 func RunStartGarbageCollection(c *CmdConfig) error {
 	var registryName string
+	var err error
 	// we anticipate supporting multiple registries in the future by allowing the
 	// user to specify a registry argument on the command line but defaulting to
 	// the default registry returned by c.Registry().Get()
 	if len(c.Args) == 0 {
-		var err error
-		registry, err := c.Registry().Get()
+		registryName, err = getRegistryNameFromArgs(c, c.Args, 0)
 		if err != nil {
-			return fmt.Errorf("failed to get registry: %w", err)
+			return err
 		}
-		registryName = registry.Name
 	} else if len(c.Args) == 1 {
 		registryName = c.Args[0]
 	} else {
@@ -838,8 +959,8 @@ func RunStartGarbageCollection(c *CmdConfig) error {
 
 	msg := "run garbage collection -- this will put your registry in read-only mode until it finishes"
 
-	if !force && AskForConfirm(msg) != nil {
-		return errOperationAborted
+	if err := confirmAction(force, msg); err != nil {
+		return err
 	}
 
 	gc, err := c.Registry().StartGarbageCollection(registryName, gcStartRequest)
@@ -854,16 +975,15 @@ func RunStartGarbageCollection(c *CmdConfig) error {
 // garbage collection.
 func RunGetGarbageCollection(c *CmdConfig) error {
 	var registryName string
+	var err error
 	// we anticipate supporting multiple registries in the future by allowing the
 	// user to specify a registry argument on the command line but defaulting to
 	// the default registry returned by c.Registry().Get()
 	if len(c.Args) == 0 {
-		var err error
-		registry, err := c.Registry().Get()
+		registryName, err = getRegistryNameFromArgs(c, c.Args, 0)
 		if err != nil {
-			return fmt.Errorf("failed to get registry: %w", err)
+			return err
 		}
-		registryName = registry.Name
 	} else if len(c.Args) == 1 {
 		registryName = c.Args[0]
 	} else {
@@ -882,16 +1002,15 @@ func RunGetGarbageCollection(c *CmdConfig) error {
 // garbage collection.
 func RunListGarbageCollections(c *CmdConfig) error {
 	var registryName string
+	var err error
 	// we anticipate supporting multiple registries in the future by allowing the
 	// user to specify a registry argument on the command line but defaulting to
 	// the default registry returned by c.Registry().Get()
 	if len(c.Args) == 0 {
-		var err error
-		registry, err := c.Registry().Get()
+		registryName, err = getRegistryNameFromArgs(c, c.Args, 0)
 		if err != nil {
-			return fmt.Errorf("failed to get registry: %w", err)
+			return err
 		}
-		registryName = registry.Name
 	} else if len(c.Args) == 1 {
 		registryName = c.Args[0]
 	} else {
@@ -912,6 +1031,7 @@ func RunCancelGarbageCollection(c *CmdConfig) error {
 	var (
 		registryName string
 		gcUUID       string
+		err          error
 	)
 
 	if len(c.Args) == 0 {
@@ -929,14 +1049,13 @@ func RunCancelGarbageCollection(c *CmdConfig) error {
 	// user to specify a registry argument on the command line but defaulting to
 	// the default registry returned by c.Registry().Get()
 	if registryName == "" {
-		registry, err := c.Registry().Get()
+		registryName, err = getRegistryNameFromArgs(c, []string{}, 0)
 		if err != nil {
-			return fmt.Errorf("failed to get registry: %w", err)
+			return err
 		}
-		registryName = registry.Name
 	}
 
-	_, err := c.Registry().CancelGarbageCollection(registryName, gcUUID)
+	_, err = c.Registry().CancelGarbageCollection(registryName, gcUUID)
 	if err != nil {
 		return err
 	}
@@ -965,6 +1084,934 @@ func RunRegistryOptionsTiers(c *CmdConfig) error {
 
 func RunGetRegistryOptionsRegions(c *CmdConfig) error {
 	regions, err := c.Registry().GetAvailableRegions()
+	if err != nil {
+		return err
+	}
+
+	item := &displayers.RegistryAvailableRegions{
+		Regions: regions,
+	}
+	return c.Display(item)
+}
+
+// Registries creates the registries sub-command
+func Registries() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:     "registries",
+			Aliases: []string{"regs", "rs"},
+			Short:   "Display commands for working with multiple container registries",
+			Long:    "The subcommands of `doctl registries` allow you to manage multiple registries.",
+			GroupID: manageResourcesGroup,
+		},
+	}
+
+	listRegistriesDesc := `Lists information about all registries in your account, including:
+  - The registry name
+  - The endpoint used to access it
+  - The region where it resides
+`
+	cmdRunRegistriesList := CmdBuilder(
+		cmd,
+		RunRegistriesList, "list",
+		"List all registries in your account", listRegistriesDesc,
+		Writer, aliasOpt("ls"), displayerType(&displayers.Registry{}),
+	)
+	cmdRunRegistriesList.Example = `The following example lists all registries in your account: doctl registries list`
+
+	createRegistriesDesc := `Creates a new registry in your account. The registry name must be unique and can contain only lowercase letters, numbers, and hyphens.`
+	cmdRunRegistriesCreate := CmdBuilder(
+		cmd,
+		RunRegistriesCreate, "create <registry-name>",
+		"Create a private container registry",
+		createRegistriesDesc,
+		Writer, aliasOpt("c"),
+	)
+	AddStringFlag(cmdRunRegistriesCreate, doctl.ArgSubscriptionTier, "", "basic",
+		"Subscription tier for the new registry. For a list of possible values, use the `doctl registries options subscription-tiers` command.", requiredOpt())
+	AddStringFlag(cmdRunRegistriesCreate, doctl.ArgRegionSlug, "", "",
+		"A `slug` indicating which datacenter region the registry reside in. For a list of supported region slugs, use the `doctl registries options available-regions` command")
+	cmdRunRegistriesCreate.Example = `The following example creates a registry named ` + "`" + `example-registry` + "`" + ` in the NYC3 region: doctl registries create example-registry --region=nyc3`
+
+	getRegistryDesc := `Retrieves information about a registry in your account, including:
+  - The registry name
+  - The endpoint used to access it
+  - The region where it resides
+`
+	cmdRunRegistriesGet := CmdBuilder(
+		cmd,
+		RunRegistriesGet, "get <registry-name>",
+		"Get information about a registry",
+		getRegistryDesc,
+		Writer, aliasOpt("g"), displayerType(&displayers.Registry{}),
+	)
+	cmdRunRegistriesGet.Example = `The following example retrieves information about a registry named ` + "`" + `example-registry` + "`" + `: doctl registries get example-registry`
+
+	deleteRegistryDesc := "Permanently deletes a registry from your account."
+	cmdRunRegistriesDelete := CmdBuilder(
+		cmd,
+		RunRegistriesDelete, "delete <registry-name>",
+		"Delete a registry",
+		deleteRegistryDesc,
+		Writer, aliasOpt("d", "del", "rm"),
+	)
+	AddBoolFlag(cmdRunRegistriesDelete, doctl.ArgForce, doctl.ArgShortForce, false, "Delete registry without confirmation prompt")
+	cmdRunRegistriesDelete.Example = `The following example deletes a registry named ` + "`" + `example-registry` + "`" + `: doctl registries delete example-registry. Note that you can delete only one registry at a time.`
+
+	dockerConfigDesc := `Outputs a JSON-formatted Docker configuration that you can use to configure a Docker client to authenticate with your private container registry. This configuration is useful for configuring third-party tools that need access to your registry.
+
+By default this command generates read-only credentials. Use the ` + "`" + `--read-write` + "`" + ` flag to generate credentials that can push. The configuration produced by this command contains a DigitalOcean API token that can be used to access your account and should be treated as sensitive information.`
+
+	cmdRunRegistriesDockerConfig := CmdBuilder(cmd, RunRegistriesDockerConfig, "docker-config <registry-name>",
+		"Generate a Docker auth configuration for a registry",
+		dockerConfigDesc, Writer, aliasOpt("config"))
+	AddBoolFlag(cmdRunRegistriesDockerConfig, doctl.ArgReadWrite, "", false,
+		"Generates credentials that can push to your registry")
+	AddIntFlag(cmdRunRegistriesDockerConfig, doctl.ArgRegistryExpirySeconds, "", 0,
+		"The length of time the registry credentials are valid for, in seconds. By default, the credentials do not expire.")
+	cmdRunRegistriesDockerConfig.Example = `The following example generates a Docker configuration for a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--expiry-seconds` + "`" + ` to set the credentials to expire after one day: doctl registries docker-config example-registry --expiry-seconds=86400`
+
+	// Add login command
+	loginRegDesc := "Logs Docker into Container Registry making pull and push commands to your private container registry authenticated."
+	cmdRegistriesLogin := CmdBuilder(cmd, RunRegistriesLogin, "login <registry-name>", "Log in Docker to a container registry",
+		loginRegDesc, Writer)
+	AddIntFlag(cmdRegistriesLogin, doctl.ArgRegistryExpirySeconds, "", 0,
+		"The length of time the registry credentials are valid for, in seconds. By default, the credentials expire after 30 days.")
+	AddBoolFlag(cmdRegistriesLogin, doctl.ArgRegistryReadOnly, "", false,
+		"Sets the DigitalOcean API token generated by the login command to read-only, causing any push operations to fail. By default, the API token is read-write.")
+	AddBoolFlag(cmdRegistriesLogin, doctl.ArgRegistryNeverExpire, "", false,
+		"Sets the DigitalOcean API token generated by the login command to never expire. By default, this is set to false.")
+	cmdRegistriesLogin.Example = `The following example logs Docker into a registry named ` + "`" + `example-registry` + "`" + ` and provides Docker with read-only credentials: doctl registries login example-registry --read-only=true`
+
+	// Add logout command
+	logoutRegDesc := "This command logs Docker out of the private container registry, revoking access to it."
+	cmdRunRegistriesLogout := CmdBuilder(cmd, RunRegistriesLogout, "logout <registry-name>", "Log out Docker from a container registry",
+		logoutRegDesc, Writer)
+	AddStringFlag(cmdRunRegistriesLogout, doctl.ArgRegistryAuthorizationServerEndpoint, "", oauthTokenRevokeEndpoint, "The endpoint of the OAuth authorization server used to revoke credentials on logout.")
+	cmdRunRegistriesLogout.Example = `The following example logs Docker out of a registry named ` + "`" + `example-registry` + "`" + `: doctl registries logout example-registry`
+
+	// Add kubernetes-manifest command
+	kubeManifestDesc := `Outputs a YAML-formatted Kubernetes secret manifest that can be used to grant a Kubernetes cluster pull access to your private container registry.
+
+By default, the secret manifest is applied to all the namespaces for the Kubernetes cluster using the DOSecret operator. The DOSecret operator is available on clusters running version 1.15.12-do.2 or greater. For older clusters, or to restrict the secret to a specific namespace, use the ` + "`" + `--namespace` + "`" + ` flag.
+
+You can redirect the command's output to a file to save the manifest for later use or pipe it directly to ` + "`" + `kubectl` + "`" + ` to create the secret in your cluster:
+
+    doctl registries kubernetes-manifest example-registry | kubectl apply -f -
+`
+	cmdRunRegistriesKubernetesManifest := CmdBuilder(cmd, RunRegistriesKubernetesManifest, "kubernetes-manifest <registry-name>",
+		"Generate a Kubernetes secret manifest for a registry.",
+		kubeManifestDesc, Writer, aliasOpt("k8s"))
+	AddStringFlag(cmdRunRegistriesKubernetesManifest, doctl.ArgObjectName, "", "",
+		"The secret's name. Defaults to the registry name prefixed with \"registry-\"")
+	AddStringFlag(cmdRunRegistriesKubernetesManifest, doctl.ArgObjectNamespace, "",
+		"kube-system", "The Kubernetes namespace to hold the secret")
+	cmdRunRegistriesKubernetesManifest.Example = `The following example generates a secret manifest for a registry named ` + "`" + `example-registry` + "`" + ` and applies it to the ` + "`" + `kube-system` + "`" + ` namespace: doctl registries kubernetes-manifest example-registry --namespace=kube-system`
+
+	// Add sub-commands
+	cmd.AddCommand(RegistriesRepository())
+	cmd.AddCommand(RegistriesGarbageCollection())
+	cmd.AddCommand(RegistriesOptions())
+
+	return cmd
+}
+
+// RunRegistriesList lists all registries in the account.
+func RunRegistriesList(c *CmdConfig) error {
+	registries, err := c.Registries().List()
+	if err != nil {
+		return err
+	}
+
+	return displayRegistries(c, registries...)
+}
+
+// RunRegistriesCreate creates a new registry.
+func RunRegistriesCreate(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+
+	name := c.Args[0]
+	subscriptionTier, err := c.Doit.GetString(c.NS, doctl.ArgSubscriptionTier)
+	if err != nil {
+		return err
+	}
+	region, err := c.Doit.GetString(c.NS, doctl.ArgRegionSlug)
+	if err != nil {
+		return err
+	}
+
+	createRequest := &godo.RegistryCreateRequest{
+		Name:                 name,
+		SubscriptionTierSlug: subscriptionTier,
+		Region:               region,
+	}
+	registry, err := c.Registries().Create(createRequest)
+	if err != nil {
+		return err
+	}
+
+	return displayRegistries(c, *registry)
+}
+
+// RunRegistriesGet retrieves information about specific registries.
+func RunRegistriesGet(c *CmdConfig) error {
+	if len(c.Args) < 1 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	var registries []do.Registry
+	var errors []string
+
+	for _, name := range c.Args {
+		registry, err := c.Registries().Get(name)
+		if err != nil {
+			errors = append(errors, fmt.Sprintf("failed to fetch registry %s: %v", name, err))
+			continue
+		}
+		registries = append(registries, *registry)
+	}
+
+	if len(registries) > 0 {
+		if err := displayRegistries(c, registries...); err != nil {
+			return err
+		}
+	}
+
+	if len(errors) > 0 {
+		return fmt.Errorf("%s", strings.Join(errors, "\n"))
+	}
+
+	return nil
+}
+
+// RunRegistriesDelete deletes a specific registry.
+func RunRegistriesDelete(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+
+	name := c.Args[0]
+	force, err := c.Doit.GetBool(c.NS, doctl.ArgForce)
+	if err != nil {
+		return err
+	}
+
+	if err := confirmAction(force, "delete this registry"); err != nil {
+		return err
+	}
+
+	return c.Registries().Delete(name)
+}
+
+// RunRegistriesDockerConfig generates a Docker configuration for a registry.
+func RunRegistriesDockerConfig(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+
+	registryName := c.Args[0]
+	readWrite, err := c.Doit.GetBool(c.NS, doctl.ArgReadWrite)
+	if err != nil {
+		return err
+	}
+	expirySeconds, err := c.Doit.GetInt(c.NS, doctl.ArgRegistryExpirySeconds)
+	if err != nil {
+		return err
+	}
+	regCredReq := godo.RegistryDockerCredentialsRequest{
+		ReadWrite: readWrite,
+	}
+	if expirySeconds != 0 {
+		regCredReq.ExpirySeconds = godo.PtrTo(expirySeconds)
+	}
+
+	dockerCreds, err := c.Registries().DockerCredentials(registryName, &regCredReq)
+	if err != nil {
+		return err
+	}
+
+	_, err = c.Out.Write(append(dockerCreds.DockerConfigJSON, '\n'))
+	return err
+}
+
+// RunRegistriesLogin logs in Docker to a registry.
+func RunRegistriesLogin(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+
+	registryName := c.Args[0]
+	expirySeconds, err := c.Doit.GetInt(c.NS, doctl.ArgRegistryExpirySeconds)
+	if err != nil {
+		return err
+	}
+	neverExpire, err := c.Doit.GetBool(c.NS, doctl.ArgRegistryNeverExpire)
+	if err != nil {
+		return err
+	}
+	if neverExpire && expirySeconds > 0 {
+		return errExpiryTimeAndNeverExpire
+	}
+	readOnly, err := c.Doit.GetBool(c.NS, doctl.ArgRegistryReadOnly)
+	if err != nil {
+		return err
+	}
+
+	regCredReq := godo.RegistryDockerCredentialsRequest{
+		ReadWrite:     !readOnly,
+		ExpirySeconds: godo.PtrTo(defaultRegistryAPITokenExpirySeconds),
+	}
+	if expirySeconds != 0 {
+		regCredReq.ExpirySeconds = godo.PtrTo(expirySeconds)
+	}
+	if neverExpire {
+		regCredReq.ExpirySeconds = nil
+	}
+
+	reg, err := c.Registries().Get(registryName)
+	if err != nil {
+		return err
+	}
+
+	fmt.Fprintf(c.Out, "Logging Docker in to %s\n", reg.Endpoint())
+	creds, err := c.Registries().DockerCredentials(registryName, &regCredReq)
+	if err != nil {
+		return err
+	}
+	if expirySeconds == 0 && !neverExpire {
+		notice("Login valid for 30 days. Use the --expiry-seconds flag to set a shorter expiration or --never-expire for no expiration.")
+	}
+
+	var dc dockerConfig
+	err = json.Unmarshal(creds.DockerConfigJSON, &dc)
+	if err != nil {
+		return err
+	}
+
+	// read the login credentials from the docker config
+	for host, conf := range dc.Auths {
+		// decode and split into username + password
+		creds, err := base64.StdEncoding.DecodeString(conf.Auth)
+		if err != nil {
+			return err
+		}
+
+		splitCreds := strings.Split(string(creds), ":")
+		if len(splitCreds) != 2 {
+			return fmt.Errorf("got invalid docker credentials")
+		}
+		user, pass := splitCreds[0], splitCreds[1]
+
+		authconfig := configtypes.AuthConfig{
+			Username:      user,
+			Password:      pass,
+			ServerAddress: host,
+		}
+
+		cf := dockerconf.LoadDefaultConfigFile(os.Stderr)
+		dockerCreds := cf.GetCredentialsStore(authconfig.ServerAddress)
+		err = dockerCreds.Store(authconfig)
+		if err != nil {
+			_, isSnap := os.LookupEnv("SNAP")
+			if os.IsPermission(err) && isSnap {
+				warn("Using the doctl Snap? Grant access to the doctl:dot-docker plug to use this command with: sudo snap connect doctl:dot-docker")
+				return err
+			}
+
+			return err
+		}
+
+		err = cf.Save()
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// RunRegistriesLogout logs Docker out of a registry.
+func RunRegistriesLogout(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+
+	registryName := c.Args[0]
+	endpoint, err := c.Doit.GetString(c.NS, doctl.ArgRegistryAuthorizationServerEndpoint)
+	if err != nil {
+		return err
+	}
+
+	reg, err := c.Registries().Get(registryName)
+	if err != nil {
+		return err
+	}
+
+	server := reg.Endpoint()
+	fmt.Fprintf(c.Out, "Removing login credentials for %s\n", server)
+
+	// Use the base hostname for credential lookup (same as single registry)
+	// Docker credentials are stored under registry.digitalocean.com, not registry.digitalocean.com/registry-name
+	baseServer := do.RegistryHostname
+
+	cf := dockerconf.LoadDefaultConfigFile(os.Stderr)
+	dockerCreds := cf.GetCredentialsStore(baseServer)
+	authConfig, err := dockerCreds.Get(baseServer)
+	if err != nil {
+		return err
+	}
+
+	err = dockerCreds.Erase(baseServer)
+	if err != nil {
+		_, isSnap := os.LookupEnv("SNAP")
+		if os.IsPermission(err) && isSnap {
+			warn("Using the doctl Snap? Grant access to the doctl:dot-docker plug to use this command with: sudo snap connect doctl:dot-docker")
+			return err
+		}
+
+		return err
+	}
+
+	// For multi-registry logout, we need to use the RegistriesService equivalent
+	// Since RegistriesService doesn't have RevokeOAuthToken, we'll use the Registry service
+	rs := c.Registry()
+	return rs.RevokeOAuthToken(authConfig.Password, endpoint)
+}
+
+// RunRegistriesKubernetesManifest prints a Kubernetes manifest for a registry.
+func RunRegistriesKubernetesManifest(c *CmdConfig) error {
+	err := ensureOneArg(c)
+	if err != nil {
+		return err
+	}
+
+	registryName := c.Args[0]
+	secretName, err := c.Doit.GetString(c.NS, doctl.ArgObjectName)
+	if err != nil {
+		return err
+	}
+	namespace, err := c.Doit.GetString(c.NS, doctl.ArgObjectNamespace)
+	if err != nil {
+		return err
+	}
+
+	// if no secret name supplied, use the registry name
+	if secretName == "" {
+		secretName = "registry-" + registryName
+	}
+
+	// fetch docker config
+	regCredReq := godo.RegistryDockerCredentialsRequest{
+		ReadWrite: false, // k8s secrets should be read-only
+	}
+
+	dockerCreds, err := c.Registries().DockerCredentials(registryName, &regCredReq)
+	if err != nil {
+		return err
+	}
+
+	// create the manifest for the secret
+	secret := k8sapiv1.Secret{
+		TypeMeta: k8smetav1.TypeMeta{
+			APIVersion: "v1",
+			Kind:       "Secret",
+		},
+		ObjectMeta: k8smetav1.ObjectMeta{
+			Name:      secretName,
+			Namespace: namespace,
+			Annotations: map[string]string{
+				DOSecretOperatorAnnotation: registryName,
+			},
+		},
+		Type: k8sapiv1.SecretTypeDockerConfigJson,
+		Data: map[string][]byte{
+			k8sapiv1.DockerConfigJsonKey: dockerCreds.DockerConfigJSON,
+		},
+	}
+
+	serializer := k8sjson.NewYAMLSerializer(k8sjson.DefaultMetaFactory, nil, nil)
+	return serializer.Encode(&secret, c.Out)
+}
+
+// RegistriesRepository creates the repository sub-command for multi-registry
+func RegistriesRepository() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:     "repository",
+			Aliases: []string{"repo", "r"},
+			Short:   "Display commands for working with repositories in multiple container registries",
+			Long:    "The subcommands of `doctl registries repository` allow you to manage repositories in multiple registries.",
+		},
+	}
+
+	overrideNS := "registries.repository"
+
+	listRepositoriesDesc := `Retrieves information about repositories in a registry, including:
+  - The repository name
+  - The latest tag for the repository
+  - The compressed size for the latest tag
+  - The manifest digest for the latest tag
+  - The last updated timestamp
+`
+	cmdListRepositories := CmdBuilder(
+		cmd,
+		RunRegistriesListRepositories, "list <registry-name>",
+		"List repositories for a container registry", listRepositoriesDesc,
+		Writer, aliasOpt("ls"), displayerType(&displayers.Repository{}),
+		hiddenCmd(),
+	)
+	cmdListRepositories.overrideNS = overrideNS
+	cmdListRepositories.Example = `The following example lists repositories in a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--format` + "`" + ` flag to return only the name and update time of each repository: doctl registries repository list example-registry --format Name,UpdatedAt`
+
+	listRepositoriesV2Desc := `Retrieves information about repositories in a registry, including:
+  - The repository name
+  - The latest manifest of the repository
+  - The latest manifest's latest tag, if any
+  - The number of tags in the repository
+  - The number of manifests in the repository
+`
+	cmdListRepositoriesV2 := CmdBuilder(
+		cmd,
+		RunRegistriesListRepositoriesV2, "list-v2 <registry-name>",
+		"List repositories for a container registry", listRepositoriesV2Desc,
+		Writer, aliasOpt("ls2"), displayerType(&displayers.Repository{}),
+	)
+	cmdListRepositoriesV2.overrideNS = overrideNS
+	cmdListRepositoriesV2.Example = `The following example lists repositories in a registry named ` + "`" + `example-registry` + "`" + ` and uses the ` + "`" + `--format` + "`" + ` flag to return only the name and update time of each repository: doctl registries repository list-v2 example-registry --format Name,UpdatedAt`
+
+	listRepositoryTagsDesc := `Retrieves information about tags in a repository, including:
+  - The tag name
+  - The compressed size
+  - The manifest digest
+  - The last updated timestamp
+`
+	cmdListRepositoryTags := CmdBuilder(
+		cmd,
+		RunRegistriesListRepositoryTags, "list-tags <registry-name> <repository>",
+		"List tags for a repository in a container registry", listRepositoryTagsDesc,
+		Writer, aliasOpt("lt"), displayerType(&displayers.RepositoryTag{}),
+	)
+	cmdListRepositoryTags.overrideNS = overrideNS
+	cmdListRepositoryTags.Example = `The following example lists tags in a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return only the tag name and manifest digest for each tag: doctl registries repository list-tags example-registry example-repository --format Tag,ManifestDigest`
+
+	deleteTagDesc := "Permanently deletes one or more repository tags."
+	cmdRunRepositoryDeleteTag := CmdBuilder(
+		cmd,
+		RunRegistriesRepositoryDeleteTag,
+		"delete-tag <registry-name> <repository> <tag>...",
+		"Delete one or more container repository tags",
+		deleteTagDesc,
+		Writer,
+		aliasOpt("dt"),
+	)
+	cmdRunRepositoryDeleteTag.overrideNS = overrideNS
+	AddBoolFlag(cmdRunRepositoryDeleteTag, doctl.ArgForce, doctl.ArgShortForce, false, "Delete tag without confirmation prompt")
+	cmdRunRepositoryDeleteTag.Example = `The following example deletes a tag named ` + "`" + `web` + "`" + ` from a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `: doctl registries repository delete-tag example-registry example-repository web`
+
+	listRepositoryManifests := `Retrieves information about manifests in a repository, including:
+  - The manifest digest
+  - The compressed size
+  - The uncompressed size
+  - The last updated timestamp
+  - The manifest tags
+  - The manifest blobs (available in detailed output only)
+`
+	cmdListRepositoryManifests := CmdBuilder(
+		cmd,
+		RunRegistriesListRepositoryManifests, "list-manifests <registry-name> <repository>",
+		"List manifests for a repository in a container registry", listRepositoryManifests,
+		Writer, aliasOpt("lm"), displayerType(&displayers.RepositoryManifest{}),
+	)
+	cmdListRepositoryManifests.overrideNS = overrideNS
+	cmdListRepositoryManifests.Example = `The following example lists manifests in a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `. The command also uses the ` + "`" + `--format` + "`" + ` flag to return only the digest and update time for each manifest: doctl registries repository list-manifests example-registry example-repository --format Digest,UpdatedAt`
+
+	deleteManifestDesc := "Permanently deletes one or more repository manifests by digest."
+	cmdRunRepositoryDeleteManifest := CmdBuilder(
+		cmd,
+		RunRegistriesRepositoryDeleteManifest,
+		"delete-manifest <registry-name> <repository> <manifest-digest>...",
+		"Delete one or more container repository manifests by digest",
+		deleteManifestDesc,
+		Writer,
+		aliasOpt("dm"),
+	)
+	cmdRunRepositoryDeleteManifest.overrideNS = overrideNS
+	AddBoolFlag(cmdRunRepositoryDeleteManifest, doctl.ArgForce, doctl.ArgShortForce, false, "Deletes manifest without confirmation prompt")
+	cmdRunRepositoryDeleteManifest.Example = `The following example deletes a manifest with digest ` + "`" + `sha256:1234567890abcdef` + "`" + ` from a repository named ` + "`" + `example-repository` + "`" + ` in a registry named ` + "`" + `example-registry` + "`" + `: doctl registries repository delete-manifest example-registry example-repository sha256:a67c20e45178d90cbe686575719bd81f279b06842dc77521690e292c1eea685`
+
+	return cmd
+}
+
+// RegistriesGarbageCollection creates the garbage-collection sub-command for multi-registry
+func RegistriesGarbageCollection() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:     "garbage-collection",
+			Aliases: []string{"gc", "g"},
+			Short:   "Display commands for garbage collection for multiple container registries",
+			Long:    "The subcommands of `doctl registries garbage-collection` start a garbage collection, retrieve or cancel a currently-active garbage collection, or list past garbage collections for multiple registries.",
+		},
+	}
+
+	overrideNS := "registries.garbage-collection"
+
+	runStartGarbageCollectionDesc := "Starts a garbage collection on a container registry. You can only have one active garbage collection at a time for a given registry."
+	cmdStartGarbageCollection := CmdBuilder(
+		cmd,
+		RunRegistriesStartGarbageCollection,
+		"start <registry-name>",
+		"Start garbage collection for a container registry",
+		runStartGarbageCollectionDesc,
+		Writer,
+		aliasOpt("s"),
+		displayerType(&displayers.GarbageCollection{}),
+	)
+	cmdStartGarbageCollection.overrideNS = overrideNS
+	AddBoolFlag(cmdStartGarbageCollection, doctl.ArgGCIncludeUntaggedManifests, "", false,
+		"Include untagged manifests in garbage collection.")
+	AddBoolFlag(cmdStartGarbageCollection, doctl.ArgGCExcludeUnreferencedBlobs, "", false,
+		"Exclude unreferenced blobs from garbage collection.")
+	AddBoolFlag(cmdStartGarbageCollection, doctl.ArgForce, doctl.ArgShortForce, false, "Run garbage collection without confirmation prompt")
+	cmdStartGarbageCollection.Example = `The following example starts a garbage collection on a registry named ` + "`" + `example-registry` + "`" + `: doctl registries garbage-collection start example-registry`
+
+	gcInfoIncluded := `
+  - UUID
+  - Status
+  - Registry name
+  - Create time
+  - Updated at time
+  - Blobs deleted
+  - Freed bytes
+`
+
+	runGetGarbageCollectionDesc := "Retrieves the currently-active garbage collection for a container registry, if any active garbage collection exists. Information included about the registry includes:" + gcInfoIncluded
+	cmdGetGarbageCollection := CmdBuilder(
+		cmd,
+		RunRegistriesGetGarbageCollection,
+		"get-active <registry-name>",
+		"Retrieve information about the currently-active garbage collection for a container registry",
+		runGetGarbageCollectionDesc,
+		Writer,
+		aliasOpt("ga", "g"),
+		displayerType(&displayers.GarbageCollection{}),
+	)
+	cmdGetGarbageCollection.overrideNS = overrideNS
+	cmdGetGarbageCollection.Example = `The following example retrieves the currently-active garbage collection for a registry named ` + "`" + `example-registry` + "`" + `: doctl registries garbage-collection get-active example-registry`
+
+	runListGarbageCollectionsDesc := "Retrieves a list of past garbage collections for a registry. Information about each garbage collection includes:" + gcInfoIncluded
+	cmdListGarbageCollections := CmdBuilder(
+		cmd,
+		RunRegistriesListGarbageCollections,
+		"list <registry-name>",
+		"Retrieve information about past garbage collections for a container registry",
+		runListGarbageCollectionsDesc,
+		Writer,
+		aliasOpt("ls", "l"),
+		displayerType(&displayers.GarbageCollection{}),
+	)
+	cmdListGarbageCollections.overrideNS = overrideNS
+	cmdListGarbageCollections.Example = `The following example retrieves a list of past garbage collections for a registry named ` + "`" + `example-registry` + "`" + `: doctl registries garbage-collection list example-registry`
+
+	runCancelGarbageCollectionDesc := "Cancels the currently-active garbage collection for a container registry."
+	cmdCancelGarbageCollection := CmdBuilder(
+		cmd,
+		RunRegistriesCancelGarbageCollection,
+		"cancel <registry-name> <gc-uuid>",
+		"Cancel the currently-active garbage collection for a container registry",
+		runCancelGarbageCollectionDesc,
+		Writer,
+		aliasOpt("c"),
+	)
+	cmdCancelGarbageCollection.overrideNS = overrideNS
+	cmdCancelGarbageCollection.Example = `The following example cancels the garbage collection with the uuid ` + "`" + `gc-uuid` + "`" + ` for a registry named ` + "`" + `example-registry` + "`" + `: doctl registries garbage-collection cancel example-registry gc-uuid`
+
+	return cmd
+}
+
+// RegistriesOptions creates the registry options subcommand for multi-registry
+func RegistriesOptions() *Command {
+	cmd := &Command{
+		Command: &cobra.Command{
+			Use:     "options",
+			Aliases: []string{"opts", "o"},
+			Short:   "List available container registry options for multiple registries",
+			Long:    "This command lists options available when creating or updating container registries.",
+		},
+	}
+
+	overrideNS := "registries.options"
+
+	tiersDesc := "Lists available container registry subscription tiers"
+	cmdRegistriesOptionsTiers := CmdBuilder(cmd, RunRegistriesOptionsTiers, "subscription-tiers", tiersDesc, tiersDesc, Writer, aliasOpt("tiers"))
+	cmdRegistriesOptionsTiers.overrideNS = overrideNS
+	regionsDesc := "Lists available container registry regions"
+	cmdRegistriesOptionRegions := CmdBuilder(cmd, RunRegistriesOptionsRegions, "available-regions", regionsDesc, regionsDesc, Writer, aliasOpt("regions"))
+	cmdRegistriesOptionRegions.overrideNS = overrideNS
+
+	return cmd
+}
+
+// Registries Run Commands
+
+// RunRegistriesListRepositories lists repositories for the specified registry
+func RunRegistriesListRepositories(c *CmdConfig) error {
+	if len(c.Args) < 1 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+
+	repos, err := c.Registries().ListRepositories(registryName)
+	if err != nil {
+		return err
+	}
+
+	return displayRepositories(c, repos...)
+}
+
+// RunRegistriesListRepositoriesV2 lists repositories for the specified registry using V2 API
+func RunRegistriesListRepositoriesV2(c *CmdConfig) error {
+	if len(c.Args) < 1 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+
+	repos, err := c.Registries().ListRepositoriesV2(registryName)
+	if err != nil {
+		return err
+	}
+
+	return displayRepositoriesV2(c, repos...)
+}
+
+// RunRegistriesListRepositoryTags lists tags for the repository in a registry
+func RunRegistriesListRepositoryTags(c *CmdConfig) error {
+	if len(c.Args) < 2 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+	repositoryName := c.Args[1]
+
+	tags, err := c.Registries().ListRepositoryTags(registryName, repositoryName)
+	if err != nil {
+		return err
+	}
+
+	return displayRepositoryTags(c, tags...)
+}
+
+// RunRegistriesRepositoryDeleteTag deletes one or more repository tags
+func RunRegistriesRepositoryDeleteTag(c *CmdConfig) error {
+	if len(c.Args) < 3 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+	repositoryName := c.Args[1]
+	tags := c.Args[2:]
+
+	force, err := c.Doit.GetBool(c.NS, doctl.ArgForce)
+	if err != nil {
+		return err
+	}
+
+	if !force {
+		return fmt.Errorf("tag deletion is destructive and irreversible, please use --force flag to continue")
+	}
+
+	for _, tag := range tags {
+		err := c.Registries().DeleteTag(registryName, repositoryName, tag)
+		if err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(c.Out, "Successfully deleted %d tag(s)\n", len(tags))
+	return nil
+}
+
+// RunRegistriesListRepositoryManifests lists manifests for the repository in a registry
+func RunRegistriesListRepositoryManifests(c *CmdConfig) error {
+	if len(c.Args) < 2 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+	repositoryName := c.Args[1]
+
+	manifests, err := c.Registries().ListRepositoryManifests(registryName, repositoryName)
+	if err != nil {
+		return err
+	}
+
+	return displayRepositoryManifests(c, manifests...)
+}
+
+// RunRegistriesRepositoryDeleteManifest deletes one or more repository manifests by digest
+func RunRegistriesRepositoryDeleteManifest(c *CmdConfig) error {
+	if len(c.Args) < 3 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+	repositoryName := c.Args[1]
+	digests := c.Args[2:]
+
+	force, err := c.Doit.GetBool(c.NS, doctl.ArgForce)
+	if err != nil {
+		return err
+	}
+
+	if !force {
+		return fmt.Errorf("manifest deletion is destructive and irreversible, please use --force flag to continue")
+	}
+
+	for _, digest := range digests {
+		err := c.Registries().DeleteManifest(registryName, repositoryName, digest)
+		if err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(c.Out, "Successfully deleted %d manifest(s)\n", len(digests))
+	return nil
+}
+
+// RunRegistriesStartGarbageCollection starts a garbage collection for the specified registry
+func RunRegistriesStartGarbageCollection(c *CmdConfig) error {
+	if len(c.Args) < 1 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+
+	includeUntaggedManifests, err := c.Doit.GetBool(c.NS, doctl.ArgGCIncludeUntaggedManifests)
+	if err != nil {
+		return err
+	}
+
+	excludeUnreferencedBlobs, err := c.Doit.GetBool(c.NS, doctl.ArgGCExcludeUnreferencedBlobs)
+	if err != nil {
+		return err
+	}
+
+	force, err := c.Doit.GetBool(c.NS, doctl.ArgForce)
+	if err != nil {
+		return err
+	}
+
+	if !force {
+		confirmation := fmt.Sprintf("Warning: Garbage collection is irreversible and will delete unreferenced blobs from %s. Continue?", registryName)
+		if err := AskForConfirm(confirmation); err != nil {
+			return err
+		}
+	}
+
+	var gcType godo.GarbageCollectionType
+	switch {
+	case includeUntaggedManifests && excludeUnreferencedBlobs:
+		gcType = godo.GCTypeUntaggedManifestsOnly
+	case !includeUntaggedManifests && !excludeUnreferencedBlobs:
+		gcType = godo.GCTypeUnreferencedBlobsOnly
+	default:
+		gcType = godo.GCTypeUntaggedManifestsAndUnreferencedBlobs
+	}
+
+	req := &godo.StartGarbageCollectionRequest{
+		Type: gcType,
+	}
+
+	gc, err := c.Registries().StartGarbageCollection(registryName, req)
+	if err != nil {
+		return err
+	}
+
+	return displayGarbageCollections(c, *gc)
+}
+
+// RunRegistriesGetGarbageCollection gets the specified registry's currently-active garbage collection
+func RunRegistriesGetGarbageCollection(c *CmdConfig) error {
+	if len(c.Args) < 1 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+
+	gc, err := c.Registries().GetGarbageCollection(registryName)
+	if err != nil {
+		return err
+	}
+
+	return displayGarbageCollections(c, *gc)
+}
+
+// RunRegistriesListGarbageCollections lists garbage collections for a registry
+func RunRegistriesListGarbageCollections(c *CmdConfig) error {
+	if len(c.Args) < 1 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+
+	gcs, err := c.Registries().ListGarbageCollections(registryName)
+	if err != nil {
+		return err
+	}
+
+	return displayGarbageCollections(c, gcs...)
+}
+
+// RunRegistriesCancelGarbageCollection cancels the currently-active garbage collection for a registry
+func RunRegistriesCancelGarbageCollection(c *CmdConfig) error {
+	if len(c.Args) < 2 {
+		return doctl.NewMissingArgsErr(c.NS)
+	}
+
+	registryName := c.Args[0]
+	gcUUID := c.Args[1]
+
+	req := &godo.UpdateGarbageCollectionRequest{
+		Cancel: true,
+	}
+
+	gc, err := c.Registries().UpdateGarbageCollection(registryName, gcUUID, req)
+	if err != nil {
+		return err
+	}
+
+	// Check for nil pointer before dereferencing
+	if gc == nil {
+		return fmt.Errorf("garbage collection cancellation completed but no details returned")
+	}
+
+	return displayGarbageCollections(c, *gc)
+}
+
+// RunRegistriesOptionsTiers lists available container registry subscription tiers
+func RunRegistriesOptionsTiers(c *CmdConfig) error {
+	tiers, err := c.Registries().GetSubscriptionTiers()
+	if err != nil {
+		return err
+	}
+
+	item := &displayers.RegistrySubscriptionTiers{
+		SubscriptionTiers: tiers,
+	}
+	return c.Display(item)
+}
+
+// RunRegistriesOptionsRegions lists available container registry regions
+func RunRegistriesOptionsRegions(c *CmdConfig) error {
+	regions, err := c.Registries().GetAvailableRegions()
 	if err != nil {
 		return err
 	}

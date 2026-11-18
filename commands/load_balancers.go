@@ -16,7 +16,6 @@ package commands
 import (
 	_ "embed"
 	"fmt"
-	"os"
 	"reflect"
 	"strconv"
 	"strings"
@@ -51,7 +50,7 @@ With the load-balancer command, you can list, create, or delete load balancers, 
 	}
 
 	forwardingRulesTxt := "A comma-separated list of key-value pairs representing forwarding rules, which define how traffic is routed, e.g.: `entry_protocol:tcp,entry_port:3306,target_protocol:tcp,target_port:3306`."
-	CmdBuilder(cmd, RunLoadBalancerGet, "get <id>", "Retrieve a load balancer", "Use this command to retrieve information about a load balancer instance, including:\n\n"+lbDetail, Writer,
+	CmdBuilder(cmd, RunLoadBalancerGet, "get <load-balancer-id>", "Retrieve a load balancer", "Use this command to retrieve information about a load balancer instance, including:\n\n"+lbDetail, Writer,
 		aliasOpt("g"), displayerType(&displayers.LoadBalancer{}))
 
 	cmdLoadBalancerCreate := CmdBuilder(cmd, RunLoadBalancerCreate, "create",
@@ -59,13 +58,15 @@ With the load-balancer command, you can list, create, or delete load balancers, 
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerName, "", "",
 		"The load balancer's name", requiredOpt())
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgRegionSlug, "", "",
-		"The load balancer's region, e.g.: `nyc1`")
+		"The load balancer's region, e.g.: `nyc1`", flagHint("run doctl compute region list"))
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgSizeSlug, "", "",
 		fmt.Sprintf("The load balancer's size, e.g.: `lb-small`. Only one of %s and %s should be used", doctl.ArgSizeSlug, doctl.ArgSizeUnit))
 	AddIntFlag(cmdLoadBalancerCreate, doctl.ArgSizeUnit, "", 0,
 		fmt.Sprintf("The load balancer's size, e.g.: 1. Only one of %s and %s should be used", doctl.ArgSizeUnit, doctl.ArgSizeSlug))
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerType, "", "", "The type of load balancer, e.g.: `REGIONAL` or `GLOBAL`")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgVPCUUID, "", "", "The UUID of the VPC to create the load balancer in")
+	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgSubnetUUID, "", "", "The UUID of the subnet to create the load balancer in. Must be a valid subnet in the specified VPC."+
+		" (NOTE: specifying a subnet UUID is in private preview, contact DigitalOcean support to review its public availability.)")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerAlgorithm, "",
 		"round_robin", "This field has been deprecated. You can no longer specify an algorithm for load balancers.")
 	AddBoolFlag(cmdLoadBalancerCreate, doctl.ArgRedirectHTTPToHTTPS, "", false,
@@ -78,14 +79,15 @@ With the load-balancer command, you can list, create, or delete load balancers, 
 		"disable automatic DNS record creation for Let's Encrypt certificates that are added to the load balancer")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgTagName, "", "", "The name of a tag. All Droplets with this tag applied will be assigned to the load balancer.")
 	AddStringSliceFlag(cmdLoadBalancerCreate, doctl.ArgDropletIDs, "", []string{},
-		"A comma-separated list of Droplet IDs to add to the load balancer, e.g.: `12,33`")
+		"A comma-separated list of Droplet IDs to add to the load balancer, e.g.: `12,33`",
+		flagHint("run doctl compute droplet list"))
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgStickySessions, "", "",
 		"A comma-separated list of key-value pairs representing a list of active sessions, e.g.: `type:cookies, cookie_name:DO-LB, cookie_ttl_seconds:5`")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgHealthCheck, "", "",
 		"A comma-separated list of key-value pairs representing recent health check results, e.g.: `protocol:http,port:80,path:/index.html,check_interval_seconds:10,response_timeout_seconds:5,healthy_threshold:5,unhealthy_threshold:3`")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgForwardingRules, "", "",
 		forwardingRulesTxt)
-	AddBoolFlag(cmdLoadBalancerCreate, doctl.ArgCommandWait, "", false, "Boolean that specifies whether to wait for a load balancer to complete before returning control to the terminal")
+	AddWaitFlags(cmdLoadBalancerCreate, false, "Boolean that specifies whether to wait for a load balancer to complete before returning control to the terminal")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgProjectID, "", "", "Indicates which project to associate the Load Balancer with. If not specified, the Load Balancer will be placed in your default project.")
 	AddIntFlag(cmdLoadBalancerCreate, doctl.ArgHTTPIdleTimeoutSeconds, "", 0, "HTTP idle timeout that configures the idle timeout for http connections on the load balancer")
 	AddStringSliceFlag(cmdLoadBalancerCreate, doctl.ArgAllowList, "", []string{},
@@ -93,23 +95,21 @@ With the load-balancer command, you can list, create, or delete load balancers, 
 	AddStringSliceFlag(cmdLoadBalancerCreate, doctl.ArgDenyList, "", []string{},
 		"A comma-separated list of DENY rules for the load balancer, e.g.: `ip:1.2.3.4,cidr:1.2.0.0/16`")
 	AddStringSliceFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerDomains, "", []string{},
-		"A comma-separated list of domains required to ingress traffic to a global load balancer, e.g.: `name:test-domain-1 is_managed:true certificate_id:test-cert-id-1` "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"A comma-separated list of domains required to ingress traffic to a global load balancer, e.g.: `name:test-domain-1 is_managed:true certificate_id:test-cert-id-1` ")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgGlobalLoadBalancerSettings, "", "",
-		"Target protocol and port settings for ingressing traffic to a global load balancer, e.g.: `target_protocol:http,target_port:80` "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"Target protocol and port settings for ingressing traffic to a global load balancer, e.g.: `target_protocol:http,target_port:80` ")
 	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgGlobalLoadBalancerCDNSettings, "", "",
-		"CDN cache settings global load balancer, e.g.: `is_enabled:true` "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"CDN cache settings global load balancer, e.g.: `is_enabled:true` ")
 	AddStringSliceFlag(cmdLoadBalancerCreate, doctl.ArgTargetLoadBalancerIDs, "", []string{},
-		"A comma-separated list of Load Balancer IDs to add as target to the global load balancer "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
-	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerNetwork, "", "", "The type of network the load balancer is accessible from, e.g.: `EXTERNAL` or `INTERNAL`"+
-		"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
-	cmdLoadBalancerCreate.Flags().MarkHidden(doctl.ArgLoadBalancerType)
-	cmdLoadBalancerCreate.Flags().MarkHidden(doctl.ArgLoadBalancerNetwork)
+		"A comma-separated list of Load Balancer IDs to add as target to the global load balancer ")
+	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerNetwork, "", "", "The type of network the load balancer is accessible from, e.g.: `EXTERNAL` or `INTERNAL`")
+	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerNetworkStack, "", "", "The network stack type determines the allocation of ipv4/ipv6 addresses to the load balancer, e.g.: `IPV4` or `DUALSTACK`"+
+		" (NOTE: this feature is in private preview, contact DigitalOcean support to review its public availability.)")
+	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerTLSCipherPolicy, "", "", "The tls cipher policy to be used for the load balancer, e.g.: `DEFAULT` or `STRONG`")
+	AddStringFlag(cmdLoadBalancerCreate, doctl.ArgLoadBalancerIP, "", "",
+		"An optional BYOIP address to assign to the load balancer. Must be an unassigned BYOIP on your account in the same region. Not supported for GLOBAL or INTERNAL load balancers.")
 
-	cmdRecordUpdate := CmdBuilder(cmd, RunLoadBalancerUpdate, "update <id>",
+	cmdRecordUpdate := CmdBuilder(cmd, RunLoadBalancerUpdate, "update <load-balancer-id>",
 		"Update a load balancer's configuration", `Use this command to update the configuration of a specified load balancer. Using all applicable flags, the command should contain a full representation of the load balancer including existing attributes, such as the load balancer's name, region, forwarding rules, and Droplet IDs. Any attribute that is not provided is reset to its default value.`, Writer, aliasOpt("u"))
 	AddStringFlag(cmdRecordUpdate, doctl.ArgLoadBalancerName, "", "",
 		"The load balancer's name")
@@ -120,6 +120,8 @@ With the load-balancer command, you can list, create, or delete load balancers, 
 	AddIntFlag(cmdRecordUpdate, doctl.ArgSizeUnit, "", 0,
 		fmt.Sprintf("The load balancer's size, e.g.: 1. Only one of %s and %s should be used", doctl.ArgSizeUnit, doctl.ArgSizeSlug))
 	AddStringFlag(cmdRecordUpdate, doctl.ArgVPCUUID, "", "", "The UUID of the VPC to create the load balancer in")
+	AddStringFlag(cmdRecordUpdate, doctl.ArgSubnetUUID, "", "", "The UUID of the subnet to create the load balancer in. Must be a valid subnet in the specified VPC."+
+		" (NOTE: specifying a subnet UUID is in private preview, contact DigitalOcean support to review its public availability.)")
 	AddStringFlag(cmdRecordUpdate, doctl.ArgLoadBalancerAlgorithm, "",
 		"round_robin", "This field has been deprecated. You can no longer specify an algorithm for load balancers.")
 	AddBoolFlag(cmdRecordUpdate, doctl.ArgRedirectHTTPToHTTPS, "", false,
@@ -145,49 +147,45 @@ With the load-balancer command, you can list, create, or delete load balancers, 
 	AddStringSliceFlag(cmdRecordUpdate, doctl.ArgDenyList, "", nil,
 		"A comma-separated list of DENY rules for the load balancer, e.g.: `ip:1.2.3.4,cidr:1.2.0.0/16`")
 	AddStringSliceFlag(cmdRecordUpdate, doctl.ArgLoadBalancerDomains, "", []string{},
-		"A comma-separated list of domains required to ingress traffic to a global load balancer, e.g.: `name:test-domain-1 is_managed:true certificate_id:test-cert-id-1` "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"A comma-separated list of domains required to ingress traffic to a global load balancer, e.g.: `name:test-domain-1 is_managed:true certificate_id:test-cert-id-1` ")
 	AddStringFlag(cmdRecordUpdate, doctl.ArgGlobalLoadBalancerSettings, "", "",
-		"Target protocol and port settings for ingressing traffic to a global load balancer, e.g.: `target_protocol:http,target_port:80` "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"Target protocol and port settings for ingressing traffic to a global load balancer, e.g.: `target_protocol:http,target_port:80` ")
 	AddStringFlag(cmdRecordUpdate, doctl.ArgGlobalLoadBalancerCDNSettings, "", "",
-		"CDN cache settings global load balancer, e.g.: `is_enabled:true` "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"CDN cache settings global load balancer, e.g.: `is_enabled:true` ")
 	AddStringSliceFlag(cmdRecordUpdate, doctl.ArgTargetLoadBalancerIDs, "", []string{},
-		"A comma-separated list of Load Balancer IDs to add as target to the global load balancer "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"A comma-separated list of Load Balancer IDs to add as target to the global load balancer ")
+	AddStringFlag(cmdRecordUpdate, doctl.ArgLoadBalancerTLSCipherPolicy, "", "", "The tls cipher policy to be used for the load balancer, e.g.: `DEFAULT` or `STRONG`")
 
 	CmdBuilder(cmd, RunLoadBalancerList, "list", "List load balancers", "Use this command to get a list of the load balancers on your account, including the following information for each:\n\n"+lbDetail, Writer,
 		aliasOpt("ls"), displayerType(&displayers.LoadBalancer{}))
 
-	cmdRunRecordDelete := CmdBuilder(cmd, RunLoadBalancerDelete, "delete <id>",
+	cmdRunRecordDelete := CmdBuilder(cmd, RunLoadBalancerDelete, "delete <load-balancer-id>",
 		"Permanently delete a load balancer", `Use this command to permanently delete the specified load balancer. This is irreversible.`, Writer, aliasOpt("d", "rm"))
 	AddBoolFlag(cmdRunRecordDelete, doctl.ArgForce, doctl.ArgShortForce, false,
 		"Delete the load balancer without a confirmation prompt")
 
-	cmdAddDroplets := CmdBuilder(cmd, RunLoadBalancerAddDroplets, "add-droplets <id>",
+	cmdAddDroplets := CmdBuilder(cmd, RunLoadBalancerAddDroplets, "add-droplets <load-balancer-id>",
 		"Add Droplets to a load balancer", `Use this command to add Droplets to a load balancer.`, Writer)
 	AddStringSliceFlag(cmdAddDroplets, doctl.ArgDropletIDs, "", []string{},
 		"A comma-separated list of IDs of Droplet to add to the load balancer, example value: `12,33`")
 
 	cmdRemoveDroplets := CmdBuilder(cmd, RunLoadBalancerRemoveDroplets,
-		"remove-droplets <id>", "Remove Droplets from a load balancer", `Use this command to remove Droplets from a load balancer. This command does not destroy any Droplets.`, Writer)
+		"remove-droplets <load-balancer-id>", "Remove Droplets from a load balancer", `Use this command to remove Droplets from a load balancer. This command does not destroy any Droplets.`, Writer)
 	AddStringSliceFlag(cmdRemoveDroplets, doctl.ArgDropletIDs, "", []string{},
 		"A comma-separated list of IDs of Droplets to remove from the load balancer, example value: `12,33`")
 
 	cmdAddForwardingRules := CmdBuilder(cmd, RunLoadBalancerAddForwardingRules,
-		"add-forwarding-rules <id>", "Add forwarding rules to a load balancer", "Use this command to add forwarding rules to a load balancer, specified with the `--forwarding-rules` flag. Valid rules include:\n"+forwardingDetail, Writer)
+		"add-forwarding-rules <load-balancer-id>", "Add forwarding rules to a load balancer", "Use this command to add forwarding rules to a load balancer, specified with the `--forwarding-rules` flag. Valid rules include:\n"+forwardingDetail, Writer)
 	AddStringFlag(cmdAddForwardingRules, doctl.ArgForwardingRules, "", "", forwardingRulesTxt)
 
 	cmdRemoveForwardingRules := CmdBuilder(cmd, RunLoadBalancerRemoveForwardingRules,
-		"remove-forwarding-rules <id>", "Remove forwarding rules from a load balancer", "Use this command to remove forwarding rules from a load balancer, specified with the `--forwarding-rules` flag. Valid rules include:\n"+forwardingDetail, Writer)
+		"remove-forwarding-rules <load-balancer-id>", "Remove forwarding rules from a load balancer", "Use this command to remove forwarding rules from a load balancer, specified with the `--forwarding-rules` flag. Valid rules include:\n"+forwardingDetail, Writer)
 	AddStringFlag(cmdRemoveForwardingRules, doctl.ArgForwardingRules, "", "", forwardingRulesTxt)
 
-	cmdRunCachePurge := CmdBuilder(cmd, RunLoadBalancerPurgeCache, "purge-cache <id>",
+	cmdRunCachePurge := CmdBuilder(cmd, RunLoadBalancerPurgeCache, "purge-cache <load-balancer-id>",
 		"Purges CDN cache for a global load balancer", `Use this command to purge the CDN cache for specified global load balancer.`, Writer)
 	AddBoolFlag(cmdRunCachePurge, doctl.ArgForce, doctl.ArgShortForce, false,
-		"Purge the global load balancer CDN cache without a confirmation prompt "+
-			"(NOTE: this is a closed beta feature, contact DigitalOcean support to review its public availability.)")
+		"Purge the global load balancer CDN cache without a confirmation prompt ")
 
 	return cmd
 }
@@ -241,15 +239,14 @@ func RunLoadBalancerCreate(c *CmdConfig) error {
 	}
 
 	if wait {
-		lbs := c.LoadBalancers()
-		notice("Load balancer creation is in progress, waiting for load balancer to become active")
-
-		err := waitForActiveLoadBalancer(lbs, lb.ID)
+		w, err := newWaiter(c)
 		if err != nil {
-			return fmt.Errorf(
-				"load balancer couldn't enter `active` state: %v",
-				err,
-			)
+			return err
+		}
+
+		lbs := c.LoadBalancers()
+		if err := waitForActiveLoadBalancer(w, lbs, lb.ID); err != nil {
+			return err
 		}
 
 		lb, _ = lbs.Get(lb.ID)
@@ -296,16 +293,12 @@ func RunLoadBalancerDelete(c *CmdConfig) error {
 		return err
 	}
 
-	if force || AskForConfirmDelete("load balancer", 1) == nil {
-		lbs := c.LoadBalancers()
-		if err := lbs.Delete(lbID); err != nil {
-			return err
-		}
-	} else {
-		return errOperationAborted
+	if err := confirmDelete(force, "load balancer", 1); err != nil {
+		return err
 	}
 
-	return nil
+	lbs := c.LoadBalancers()
+	return lbs.Delete(lbID)
 }
 
 // RunLoadBalancerAddDroplets adds droplets to a load balancer.
@@ -405,13 +398,13 @@ func RunLoadBalancerPurgeCache(c *CmdConfig) error {
 		return err
 	}
 
-	if force || AskForConfirm("purge CDN cache for global load balancer") == nil {
-		lbs := c.LoadBalancers()
-		if err := lbs.PurgeCache(lbID); err != nil {
-			return err
-		}
-	} else {
-		return errOperationAborted
+	if err := confirmAction(force, "purge CDN cache for global load balancer"); err != nil {
+		return err
+	}
+
+	lbs := c.LoadBalancers()
+	if err := lbs.PurgeCache(lbID); err != nil {
+		return err
 	}
 
 	return nil
@@ -562,6 +555,12 @@ func buildRequestFromArgs(c *CmdConfig, r *godo.LoadBalancerRequest) error {
 		return err
 	}
 	r.VPCUUID = vpcUUID
+
+	subnetUUID, err := c.Doit.GetString(c.NS, doctl.ArgSubnetUUID)
+	if err != nil {
+		return err
+	}
+	r.VPCSubnetUUID = subnetUUID
 
 	redirectHTTPToHTTPS, err := c.Doit.GetBool(c.NS, doctl.ArgRedirectHTTPToHTTPS)
 	if err != nil {
@@ -714,47 +713,51 @@ func buildRequestFromArgs(c *CmdConfig, r *godo.LoadBalancerRequest) error {
 	}
 	r.Network = strings.ToUpper(network)
 
+	networkStack, err := c.Doit.GetString(c.NS, doctl.ArgLoadBalancerNetworkStack)
+	if err != nil {
+		return err
+	}
+	r.NetworkStack = strings.ToUpper(networkStack)
+
+	tlsCipherPolicy, err := c.Doit.GetString(c.NS, doctl.ArgLoadBalancerTLSCipherPolicy)
+	if err != nil {
+		return err
+	}
+	if tlsCipherPolicy != "" {
+		r.TLSCipherPolicy = strings.ToUpper(tlsCipherPolicy)
+	}
+
+	ip, err := c.Doit.GetString(c.NS, doctl.ArgLoadBalancerIP)
+	if err != nil {
+		return err
+	}
+	// Create-only; omit empty so shared update path never sends ip.
+	if ip != "" {
+		r.IP = ip
+	}
+
 	return nil
 }
 
-func waitForActiveLoadBalancer(lbs do.LoadBalancersService, lbID string) error {
-	const maxAttempts = 180
+func waitForActiveLoadBalancer(w waiter, lbs do.LoadBalancersService, lbID string) error {
 	const wantStatus = "active"
 	const errStatus = "errored"
-	attempts := 0
-	printNewLineSet := false
 
-	for i := 0; i < maxAttempts; i++ {
-		if attempts != 0 {
-			fmt.Fprint(os.Stderr, ".")
-			if !printNewLineSet {
-				printNewLineSet = true
-				defer fmt.Fprintln(os.Stderr)
-			}
-		}
-
+	return w.wait(waitOp{
+		Activity: fmt.Sprintf("Creating load balancer (%s)", lbID),
+		Subject:  fmt.Sprintf("load balancer (%s) to become active", lbID),
+		Success:  fmt.Sprintf("Load balancer (%s) is active", lbID),
+		Interval: 10 * time.Second,
+	}, func() (bool, string, error) {
 		lb, err := lbs.Get(lbID)
 		if err != nil {
-			return err
+			return false, "", err
 		}
 
 		if lb.Status == errStatus {
-			return fmt.Errorf(
-				"load balancer (%s) entered status `errored`",
-				lbID,
-			)
+			return false, "", fmt.Errorf("load balancer (%s) entered status `errored`", lbID)
 		}
 
-		if lb.Status == wantStatus {
-			return nil
-		}
-
-		attempts++
-		time.Sleep(10 * time.Second)
-	}
-
-	return fmt.Errorf(
-		"timeout waiting for load balancer (%s) to become active",
-		lbID,
-	)
+		return lb.Status == wantStatus, lb.Status, nil
+	})
 }

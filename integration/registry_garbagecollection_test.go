@@ -111,6 +111,18 @@ var _ = suite("registry/garbage-collection", func(t *testing.T, when spec.G, it 
 				default:
 					w.WriteHeader(http.StatusMethodNotAllowed)
 				}
+			case "/v2/registries/" + invalidRegistryName + "/garbage-collection":
+				w.WriteHeader(http.StatusNotFound)
+			case "/v2/registries/" + validRegistryName + "/garbage-collection":
+				switch req.Method {
+				case http.MethodPost:
+					w.WriteHeader(http.StatusCreated)
+					w.Write([]byte(gcResponseJSON))
+				case http.MethodGet:
+					w.Write([]byte(gcResponseJSON))
+				default:
+					w.WriteHeader(http.StatusMethodNotAllowed)
+				}
 			case "/v2/registry/" + invalidRegistryName + "/garbage-collections":
 				w.WriteHeader(http.StatusNotFound)
 			case "/v2/registry/" + validRegistryName + "/garbage-collections":
@@ -155,13 +167,19 @@ var _ = suite("registry/garbage-collection", func(t *testing.T, when spec.G, it 
 		cmd := exec.Command(builtBinaryPath,
 			"-t", "some-magic-token",
 			"-u", server.URL,
-			"registry",
+			"registries",
 			"garbage-collection",
-			"start", "--force",
+			"start",
+			validRegistryName,
+			"--force",
 		)
 		output, err := cmd.CombinedOutput()
-		expect.Equal(strings.TrimSpace(gcGetOutput), strings.TrimSpace(string(output)))
+		if err != nil {
+			t.Logf("Command failed with error: %v", err)
+			t.Logf("Command output: %s", string(output))
+		}
 		expect.NoError(err)
+		expect.Equal(strings.TrimSpace(gcGetOutput), strings.TrimSpace(string(output)))
 	})
 
 	it("gets the active garbage collection", func() {
@@ -199,7 +217,9 @@ var _ = suite("registry/garbage-collection", func(t *testing.T, when spec.G, it 
 			"cancel",
 		)
 		output, err := cmd.CombinedOutput()
-		expectMsg := "Error: (garbage-collection.cancel) command is missing required arguments"
+		// NOTE(13/09/2025) this expected message was changed to have the "registry" prefix because now
+		// the sub-commands for "registry" and "registries" are distinguished by using overrideNS (override name space)
+		expectMsg := "Error: (registry.garbage-collection.cancel) command is missing required arguments\n→ run doctl registry garbage-collection cancel --help"
 		expect.Equal(strings.TrimSpace(expectMsg), strings.TrimSpace(string(output)))
 		expect.Error(err)
 	})
@@ -214,7 +234,7 @@ var _ = suite("registry/garbage-collection", func(t *testing.T, when spec.G, it 
 			"invalid-gc-uuid",
 		)
 		output, err := cmd.CombinedOutput()
-		expectMsg := "Error: PUT " + server.URL + "/v2/registry/" + validRegistryName + "/garbage-collection/" + invalidGCUUID + ": 404"
+		expectMsg := "Error: Not Found\nthe requested resource does not exist, or not in this account/context\nstatus 404"
 		expect.Equal(strings.TrimSpace(expectMsg), strings.TrimSpace(string(output)))
 		expect.Error(err)
 	})
@@ -230,7 +250,7 @@ var _ = suite("registry/garbage-collection", func(t *testing.T, when spec.G, it 
 			validGCUUID,
 		)
 		output, err := cmd.CombinedOutput()
-		expectMsg := "Error: PUT " + server.URL + "/v2/registry/" + invalidRegistryName + "/garbage-collection/" + validGCUUID + ": 404"
+		expectMsg := "Error: Not Found\nthe requested resource does not exist, or not in this account/context\nstatus 404"
 		expect.Equal(strings.TrimSpace(expectMsg), strings.TrimSpace(string(output)))
 		expect.Error(err)
 	})

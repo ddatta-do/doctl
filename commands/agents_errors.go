@@ -1,0 +1,381 @@
+/*
+Copyright 2026 The Doctl Authors All rights reserved.
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    15|See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package commands
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"unicode"
+)
+
+// godoErrorLine matches godo.ErrorResponse.Error() output:
+//
+//	METHOD URL: 400 message
+//	METHOD URL: 400 (request "id") message
+var godoErrorLine = regexp.MustCompile(`(?i)^(?:GET|POST|PUT|PATCH|DELETE|HEAD)\s+\S+:\s+\d{3}(?:\s+\(request "[^"]*"\))?\s+(.+)$`)
+
+// unicodeEscapeRE matches JSON-style \uXXXX sequences that APIs embed in
+// error strings (e.g. unknown field "\u00a0\u00a0KEY").
+var unicodeEscapeRE = regexp.MustCompile(`\\u([0-9a-fA-F]{4})`)
+
+// unknownFieldQuotedRE captures the quoted field name in agentspec unknown-
+// field errors.
+var unknownFieldQuotedRE = regexp.MustCompile(`unknown field "([^"]*)"`)
+
+// contractsPathHintRE matches internal harness-api contract path hints that
+// customers cannot open (MARSOHS-1627).
+var contractsPathHintRE = regexp.MustCompile(`;?\s*see contracts/[A-Za-z0-9._/-]+`)
+
+// agentPrettyError is a user-facing agent CLI error: human title + reason,
+// without METHOD/URL/status noise from raw godo ErrorResponse strings. It
+// implements StructuredError so checkErr and inline stream failures share the
+// same Title/Reason/status/next-step layout as every other doctl command.
+type agentPrettyError struct {
+	title  string
+	reason string
+	status int
+	tips   []string
+	cause  error
+}
+
+func (e *agentPrettyError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if strings.TrimSpace(e.reason) != "" {
+		return e.reason
+	}
+	if e.cause != nil {
+		return e.cause.Error()
+	}
+	return e.title
+}
+
+func (e *agentPrettyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func (e *agentPrettyError) Title() string {
+	if e == nil {
+		return ""
+	}
+	if title := strings.TrimSpace(e.title); title != "" {
+		return title
+	}
+	return "Something went wrong"
+}
+
+func (e *agentPrettyError) Reason() string {
+	if e == nil {
+		return ""
+	}
+	reason := strings.TrimSpace(e.reason)
+	if reason == "" && e.cause != nil {
+		reason = strings.TrimSpace(e.cause.Error())
+	}
+	if reason == "" || strings.EqualFold(reason, e.Title()) {
+		return ""
+	}
+	return reason
+}
+
+func (e *agentPrettyError) Status() int {
+	if e == nil {
+		return 0
+	}
+	return e.status
+}
+
+func (e *agentPrettyError) RequestID() string {
+	if e == nil {
+		return ""
+	}
+	return genericStructuredError{err: e.cause}.RequestID()
+}
+
+func (e *agentPrettyError) NextStep() string {
+	if e == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(e.tips))
+	for _, tip := range e.tips {
+		if tip = strings.TrimSpace(tip); tip != "" {
+			parts = append(parts, tip)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+// beautifyAgentErrorFor is beautifyAgentError plus billing enrichment: a
+// prepayment-gate 402 gets the team's live balance and auto top-off state
+// folded into the StructuredError. Every spend path returns through here, so
+// no call site has to opt in.
+//
+// It re-derives the prepay error even from an already-beautified error, because
+// several commands beautify early and would otherwise keep the plain variant.
+func beautifyAgentErrorFor(c *CmdConfig, err error) error {
+	if err == nil {
+		return nil
+	}
+	if prepayBlockedErr(err) {
+		return newPrepayBlockedError(c, err)
+	}
+	return beautifyAgentError(err)
+}
+
+// beautifyAgentError rewrites bare API/local errors into agentPrettyError so
+// checkErr can render the shared structured layout instead of a raw REST dump.
+func beautifyAgentError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ErrExitSilently) {
+		return err
+	}
+	var already *agentPrettyError
+	if errors.As(err, &already) {
+		return err
+	}
+
+	// Billing gate responses carry copy of their own: 402 must say "add funds"
+	// and 503 must not, so neither may fall through to the generic cards.
+	if prepayBlockedErr(err) {
+		return newPrepayBlockedError(nil, err)
+	}
+	if prepayUnknownErr(err) {
+		return &agentPrettyError{
+			title:  prepayUnknownTitle,
+			reason: "We couldn't confirm your team's prepayment status. This is usually brief.",
+			status: http.StatusServiceUnavailable,
+			tips:   []string{"Retry in a moment"},
+			cause:  err,
+		}
+	}
+
+	if msg, status, ok := agentAPIError(err); ok {
+		reason := strings.TrimSpace(msg)
+		if reason == "" {
+			reason = strings.TrimSpace(err.Error())
+		}
+		reason = sanitizeAgentAPIMessage(stripGodoTransportNoise(reason))
+		title, tips := agentErrorTitleAndTips(reason, status)
+		return &agentPrettyError{
+			title:  title,
+			reason: reason,
+			status: status,
+			tips:   tips,
+			cause:  err,
+		}
+	}
+
+	// Local validation / wrapped copy — still present as a clean card.
+	reason := sanitizeAgentAPIMessage(strings.TrimSpace(stripGodoTransportNoise(err.Error())))
+	title := "Couldn't complete that request"
+	tips := []string{}
+	lower := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lower, "limit of") && strings.Contains(lower, "active sessions"):
+		title = "Session limit reached"
+		tips = []string{"doctl harness-runtime list", "doctl harness-runtime remove <session>"}
+	case strings.Contains(lower, "active sessions"):
+		title = "Config still has active sessions"
+		tips = []string{"doctl harness-runtime config list-sessions <config-id>", "doctl harness-runtime remove <session>"}
+	case strings.Contains(lower, "mutually exclusive") || strings.Contains(lower, "is required") || strings.Contains(lower, "invalid --"):
+		title = "Invalid arguments"
+	case lower == "operation aborted":
+		// A delete the user did not confirm, or one that must ask and has no terminal to ask
+		// on. Nothing was sent to the API.
+		title = "Not confirmed"
+		tips = []string{"Nothing was deleted", "Re-run with --force to delete without being asked"}
+	case strings.Contains(lower, "not set locally") || strings.Contains(lower, "environment variable"):
+		title = "Missing environment value"
+		tips = []string{"Set the variable in your shell, or re-run in a terminal to be prompted"}
+	case strings.Contains(lower, "openai"):
+		title = "OpenAI Agents request failed"
+		tips = []string{"Check $OPENAI_API_KEY", "Retry in a moment"}
+	case strings.Contains(lower, "exec timed out"):
+		title = "Exec timed out"
+		tips = []string{"Pass a larger --timeout", "Or omit --timeout to use the server default"}
+	case strings.Contains(lower, "timed out"):
+		title = "Timed out"
+		tips = []string{"Retry with a longer --wait-timeout", "doctl harness-runtime show <session>"}
+	case strings.Contains(lower, "no agent session goes by the name"):
+		title = "Session not found"
+		tips = []string{"doctl harness-runtime list"}
+	case strings.Contains(lower, "many agent sessions go by the name"):
+		title = "Ambiguous session name"
+		tips = []string{"Pass the session ID instead", "doctl harness-runtime list"}
+	}
+
+	return &agentPrettyError{
+		title:  title,
+		reason: reason,
+		tips:   tips,
+		cause:  err,
+	}
+}
+
+func agentErrorTitleAndTips(msg string, status int) (title string, tips []string) {
+	lower := strings.ToLower(msg)
+	switch status {
+	case http.StatusUnauthorized:
+		return "Authentication failed", []string{"doctl auth login"}
+	case http.StatusForbidden:
+		// A team that has not been let into persistent workspaces gets a 403 with
+		// this message. Its token and permissions are fine, so the scopes tip would
+		// send it the wrong way, and a retry does not help.
+		if strings.Contains(lower, "workspaces are not enabled") {
+			return "Not available yet", nil
+		}
+		return "Access denied", []string{"Check your token scopes or team permissions"}
+	case http.StatusNotFound:
+		return "Not found", []string{"doctl harness-runtime list", "Confirm the ID or name and try again"}
+	case http.StatusConflict:
+		switch {
+		case strings.Contains(lower, "limit of") && strings.Contains(lower, "active sessions"):
+			return "Session limit reached", []string{"doctl harness-runtime list", "doctl harness-runtime remove <session>"}
+		case strings.Contains(lower, "active sessions"):
+			return "Config still has active sessions", []string{"doctl harness-runtime config list-sessions <config-id>", "doctl harness-runtime remove <session>"}
+		case strings.Contains(lower, "run is terminal"):
+			return "Session run has ended", []string{"doctl harness-runtime remove <session>", "doctl harness-runtime create --harness opencode --name new-session"}
+		case strings.Contains(lower, "already attached") || strings.Contains(lower, "another device"):
+			return "Session already attached elsewhere", []string{"Detach on the other device, then re-run doctl harness-runtime launch"}
+		case strings.Contains(lower, "no agent"):
+			// The server's copy names the three ways in but not the commands
+			// that are them, and this card is where someone lands after
+			// reaching for the one that does not exist here.
+			return "This session runs no agent", []string{
+				agentCLI + " exec <session> -- <command>",
+				agentCLI + " upload <session> --local-file <path> --workspace-path <path>",
+				agentCLI + " download <session> --workspace-path <path> --save-to <path>",
+				agentCLI + " port-forward <session> <port>",
+			}
+		default:
+			return "Conflict", nil
+		}
+	case http.StatusPaymentRequired:
+		return prepayBlockedTitle, []string{fmt.Sprintf("Add funds at %s", prepayTopUpURL), prepayBalanceCmd}
+	case http.StatusTooManyRequests:
+		if strings.Contains(lower, "exec stream") || strings.Contains(lower, "capacity exhausted") {
+			return "Exec stream capacity exhausted", []string{"Wait a moment and retry"}
+		}
+		return "Rate limited", []string{"Wait a moment and retry"}
+	case http.StatusBadRequest:
+		if strings.Contains(lower, "agentspec") || strings.Contains(lower, "unknown field") ||
+			strings.Contains(lower, "unexpected whitespace") {
+			return "Invalid request", []string{
+				"doctl harness-runtime validate",
+				"Retype keys that may have been copy-pasted from docs (invisible spaces)",
+			}
+		}
+		return "Invalid request", nil
+	case http.StatusNotImplemented:
+		// Permanent for now, so no retry advice.
+		return "Not available yet", nil
+	case http.StatusGatewayTimeout:
+		if strings.Contains(lower, "exec timed out") {
+			return "Exec timed out", []string{
+				"Pass a larger --timeout",
+				"Or omit --timeout to use the server default",
+			}
+		}
+		return "Service temporarily unavailable", []string{"Retry in a moment"}
+	case http.StatusBadGateway, http.StatusServiceUnavailable:
+		return "Service temporarily unavailable", []string{"Retry in a moment"}
+	default:
+		if status >= 500 {
+			return "Server error", []string{"Retry in a moment"}
+		}
+		if status >= 400 {
+			return "Request failed", nil
+		}
+		return "Something went wrong", nil
+	}
+}
+
+// stripGodoTransportNoise removes "METHOD URL: status" prefixes from error
+// strings so users see the human message, not the REST wire format.
+func stripGodoTransportNoise(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	if m := godoErrorLine.FindStringSubmatch(s); len(m) == 2 {
+		if msg := strings.TrimSpace(m[1]); msg != "" {
+			return msg
+		}
+	}
+	return s
+}
+
+// sanitizeAgentAPIMessage makes agentspec validation errors actionable for
+// customers (MARSOHS-1627): decode embedded \uXXXX escapes, call out
+// unexpected whitespace in field names, and drop internal contracts/ paths.
+func sanitizeAgentAPIMessage(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return s
+	}
+	s = unescapeUnicodeEscapes(s)
+	s = rewriteUnknownFieldWhitespace(s)
+	s = contractsPathHintRE.ReplaceAllString(s, "")
+	s = strings.TrimSpace(s)
+	// Collapse "(foo )" leftovers after stripping the contracts clause.
+	s = strings.ReplaceAll(s, " )", ")")
+	s = strings.ReplaceAll(s, "  ", " ")
+	return s
+}
+
+func unescapeUnicodeEscapes(s string) string {
+	return unicodeEscapeRE.ReplaceAllStringFunc(s, func(esc string) string {
+		n, err := strconv.ParseUint(esc[2:], 16, 32)
+		if err != nil {
+			return esc
+		}
+		return string(rune(n))
+	})
+}
+
+func rewriteUnknownFieldWhitespace(s string) string {
+	return unknownFieldQuotedRE.ReplaceAllStringFunc(s, func(full string) string {
+		sub := unknownFieldQuotedRE.FindStringSubmatch(full)
+		if len(sub) != 2 {
+			return full
+		}
+		field := sub[1]
+		trimmed := strings.TrimSpace(field)
+		if trimmed == field && !strings.ContainsFunc(field, isCopyPasteSpace) {
+			return fmt.Sprintf("unknown field %q", field)
+		}
+		if trimmed == "" {
+			return "unknown field (key is only whitespace — often non-breaking spaces from copy-paste)"
+		}
+		return fmt.Sprintf("unknown field %q (has unexpected whitespace — often from docs copy-paste)", trimmed)
+	})
+}
+
+func isCopyPasteSpace(r rune) bool {
+	switch r {
+	case '\u00a0', '\u2007', '\u202f', '\u2009', '\u200a', '\u200b':
+		return true
+	}
+	return unicode.IsSpace(r) && r != ' ' && r != '\t' && r != '\n' && r != '\r'
+}
